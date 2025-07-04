@@ -1,0 +1,60 @@
+[project]
+name = "multinational"
+version = "0.1.1"
+description = "ML model for labo3 cohort"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "duckdb>=1.2.2",
+    "google-cloud-storage>=3.1.1",
+    "lightgbm>=4.6.0",
+    "loguru>=0.7.3",
+    "matplotlib>=3.10.3",
+    "mlflow>=3.1.1",
+    "numpy>=2.2.6",
+    "optuna>=4.4.0",
+    "pandas>=2.2.3",
+    "polars>=1.30.0",
+    "pyarrow>=20.0.0",
+    "pydantic>=2.11.7",
+    "ruff>=0.11.10",
+    "scikit-learn>=1.7.0",
+    "statsforecast>=2.0.1",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=6.29.5",
+    "pip>=25.1.1",
+    "pre-commit>=4.2.0",
+]
+
+[build-system]
+requires = [
+  "setuptools>=72.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where =["src"]
+include = ["multinational*"]
+
+[tool.ruff]
+line-length = 120
+exclude = [
+    "notebooks/*.py",  # Excludes Databricks notebooks that contain special syntax
+]
+
+[tool.ruff.lint]
+select = [
+    "F",  # pyflakes rules
+    "E",  # pycodestyle error rules
+    "W",  # pycodestyle warning rules
+    "B",  # flake8-bugbear rules
+    "I",  # isort rules
+]
+ignore = [
+    "E501",  # line-too-long
+]
+
+[tool.ruff.format]
+indent-style = "space"
