@@ -116,7 +116,7 @@ gsutil cp "$CONFIG_FILE" gs://$BUCKET_NAME/config/
 
 echo "💡 Note: Workers will install package from source using uv"
 
-# Upload .env file if it exists (check multiple locations)
+# Upload .env file with updated MLflow URI (check multiple locations)
 ENV_FILE=""
 if [ -f ".env" ]; then
     ENV_FILE=".env"
@@ -129,8 +129,34 @@ elif [ -f "labo3/.env" ]; then
 fi
 
 if [ -n "$ENV_FILE" ]; then
-    echo "📄 Uploading .env file: $ENV_FILE"
-    gsutil cp "$ENV_FILE" gs://$BUCKET_NAME/config/
+    echo "📄 Updating .env file with current orchestrator IP..."
+    
+    # Get current orchestrator VM IP
+    ORCHESTRATOR_IP=$(gcloud compute instances describe $ORCHESTRATOR_VM --zone=$ZONE --format="value(networkInterfaces[0].accessConfigs[0].natIP)" 2>/dev/null || echo "")
+    
+    if [ -n "$ORCHESTRATOR_IP" ]; then
+        echo "📡 Current orchestrator IP: $ORCHESTRATOR_IP"
+        
+        # Create temporary .env file with updated MLflow URI
+        cp "$ENV_FILE" .env.tmp
+        
+        # Remove old MLFLOW_TRACKING_URI line and add new one
+        grep -v "MLFLOW_TRACKING_URI=" .env.tmp > .env.updated || cp .env.tmp .env.updated
+        echo "MLFLOW_TRACKING_URI=http://$ORCHESTRATOR_IP:5000" >> .env.updated
+        
+        echo "📄 Uploading updated .env file: $ENV_FILE"
+        gsutil cp .env.updated gs://$BUCKET_NAME/config/.env
+        
+        # Clean up temporary files
+        rm -f .env.tmp .env.updated
+        
+        echo "✅ MLflow URI updated to: http://$ORCHESTRATOR_IP:5000"
+    else
+        echo "⚠️ Could not get orchestrator IP, uploading .env as-is"
+        gsutil cp "$ENV_FILE" gs://$BUCKET_NAME/config/
+    fi
+else
+    echo "⚠️ No .env file found to upload"
 fi
 
 # 5. Upload data files (with existence check)

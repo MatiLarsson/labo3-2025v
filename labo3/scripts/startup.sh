@@ -236,19 +236,44 @@ echo "✅ Virtual environment created and project installed successfully"
 echo "📄 Loading environment..."
 gsutil cp gs://$BUCKET_NAME/config/.env ./.env 2>/dev/null || echo "No .env file found"
 
+# Get the current IP of the orchestrator VM (where MLflow is running)
+echo "🔍 Getting orchestrator VM IP for MLflow..."
+ORCHESTRATOR_VM_NAME=\$(yq '.orchestrator.vm_name' ./config.yml)
+ORCHESTRATOR_IP=\$(gcloud compute instances describe \$ORCHESTRATOR_VM_NAME --zone=$ZONE --format="value(networkInterfaces[0].accessConfigs[0].natIP)" 2>/dev/null || echo "")
+
+if [ -n "\$ORCHESTRATOR_IP" ]; then
+    echo "📡 Found orchestrator IP: \$ORCHESTRATOR_IP"
+    
+    # Update .env file with current orchestrator IP
+    if [ -f ".env" ]; then
+        # Remove old MLFLOW_TRACKING_URI line and add new one
+        grep -v "MLFLOW_TRACKING_URI=" .env > .env.tmp || true
+        echo "MLFLOW_TRACKING_URI=http://\$ORCHESTRATOR_IP:5000" >> .env.tmp
+        mv .env.tmp .env
+        echo "✅ Updated MLflow URI to: http://\$ORCHESTRATOR_IP:5000"
+    else
+        # Create .env file with MLflow URI
+        echo "MLFLOW_TRACKING_URI=http://\$ORCHESTRATOR_IP:5000" > .env
+        echo "✅ Created .env with MLflow URI: http://\$ORCHESTRATOR_IP:5000"
+    fi
+else
+    echo "⚠️ Could not get orchestrator IP, using MLflow URI from downloaded .env"
+fi
+
 # Activate virtual environment and run the ML script
 echo "🚀 Activating virtual environment and running ML script: $script_name"
 
 # Source the virtual environment and run the script
 source .venv/bin/activate
 
-# Load environment variables after activating venv
+# Load environment variables after activating venv (now with updated MLflow URI)
 set -a
 [ -f ./.env ] && source ./.env
 set +a
 
 echo "🐍 Using Python: \$(which python)"
 echo "🐍 Python version: \$(python --version)"
+echo "📡 MLflow URI: \$MLFLOW_TRACKING_URI"
 
 # Data files will be downloaded by the ML script itself when needed
 echo "💡 Data files will be downloaded by ML script when required"
@@ -265,7 +290,7 @@ fi
 # Upload results regardless of success/failure
 echo "📤 Uploading results..."
 
-# Get deployment ID from worker instance metadata (safer approach)
+# Get deployment ID safely (handle metadata access failures)
 INSTANCE_NAME=\$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/name" -H "Metadata-Flavor: Google" 2>/dev/null || echo "unknown-worker")
 DEPLOY_ID=\$(date '+%Y%m%d_%H%M%S')  # Use timestamp as deployment ID
 EXPERIMENT_NAME=\$(python -c "import yaml; print(yaml.safe_load(open('./project_config.yml'))['experiment_name'])" 2>/dev/null || echo "unknown")
@@ -283,8 +308,9 @@ if [ -f "script_output.log" ]; then
     gsutil cp script_output.log gs://$BUCKET_NAME/\$RESULTS_PATH/script_output.log
 fi
 
-# Upload any generated files (look in current directory which is labo3/)
-find . -maxdepth 2 \( -name "*.pkl" -o -name "*.joblib" -o -name "*.csv" -o -name "*.parquet" -o -name "*.json" -o -name "*.h5" -o -name "*.model" \) | while read -r file; do
+# Upload only ML-related files (exclude development files)
+find . -maxdepth 2 \( -name "*.pkl" -o -name "*.joblib" -o -name "*.csv" -o -name "*.parquet" -o -name "*.json" -o -name "*.h5" -o -name "*.model" \) \\
+    ! -path "./.vscode/*" ! -path "./.git/*" ! -path "./.*" | while read -r file; do
     if [ -f "\$file" ]; then
         echo "📤 Uploading: \$file"
         gsutil cp "\$file" gs://$BUCKET_NAME/\$RESULTS_PATH/\$(basename "\$file") || echo "⚠️ Failed to upload \$file"
