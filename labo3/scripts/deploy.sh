@@ -18,15 +18,22 @@ ORIGINAL_DIR=$(pwd)
 # Load configuration
 CONFIG_FILE="project_config.yml"
 
-# First check current directory, then git root
+# Check multiple locations for config file
 if [ ! -f "$CONFIG_FILE" ]; then
     if [ -f "$GIT_ROOT/$CONFIG_FILE" ]; then
         CONFIG_FILE="$GIT_ROOT/$CONFIG_FILE"
         echo "📋 Using config from git root: $CONFIG_FILE"
+    elif [ -f "$GIT_ROOT/labo3/$CONFIG_FILE" ]; then
+        CONFIG_FILE="$GIT_ROOT/labo3/$CONFIG_FILE"
+        echo "📋 Using config from labo3 subdirectory: $CONFIG_FILE"
+    elif [ -f "labo3/$CONFIG_FILE" ]; then
+        CONFIG_FILE="labo3/$CONFIG_FILE"
+        echo "📋 Using config from labo3 subdirectory: $CONFIG_FILE"
     else
-        echo "❌ project_config.yml not found in current directory or git root!"
+        echo "❌ project_config.yml not found in any expected location!"
         echo "   Current: $(pwd)/$CONFIG_FILE"
         echo "   Git root: $GIT_ROOT/$CONFIG_FILE"
+        echo "   Labo3: $GIT_ROOT/labo3/$CONFIG_FILE"
         exit 1
     fi
 fi
@@ -109,12 +116,16 @@ gsutil cp "$CONFIG_FILE" gs://$BUCKET_NAME/config/
 
 echo "💡 Note: Workers will install package from source using uv"
 
-# Upload .env file if it exists (check both locations)
+# Upload .env file if it exists (check multiple locations)
 ENV_FILE=""
 if [ -f ".env" ]; then
     ENV_FILE=".env"
 elif [ -f "$GIT_ROOT/.env" ]; then
     ENV_FILE="$GIT_ROOT/.env"
+elif [ -f "$GIT_ROOT/labo3/.env" ]; then
+    ENV_FILE="$GIT_ROOT/labo3/.env"
+elif [ -f "labo3/.env" ]; then
+    ENV_FILE="labo3/.env"
 fi
 
 if [ -n "$ENV_FILE" ]; then
@@ -125,12 +136,16 @@ fi
 # 5. Upload data files (with existence check)
 echo "📁 Uploading data files..."
 yq '.paths.data_files[]' "$CONFIG_FILE" | while read -r file; do
-    # Check file in current directory first, then git root
+    # Check file in multiple locations: current dir, git root, and labo3 subdirectory
     DATA_FILE=""
     if [ -f "$file" ]; then
         DATA_FILE="$file"
     elif [ -f "$GIT_ROOT/$file" ]; then
         DATA_FILE="$GIT_ROOT/$file"
+    elif [ -f "$GIT_ROOT/labo3/$file" ]; then
+        DATA_FILE="$GIT_ROOT/labo3/$file"
+    elif [ -f "labo3/$file" ]; then
+        DATA_FILE="labo3/$file"
     fi
     
     if [ -n "$DATA_FILE" ]; then
@@ -138,15 +153,15 @@ yq '.paths.data_files[]' "$CONFIG_FILE" | while read -r file; do
         
         # Check if file already exists in GCS
         if gsutil -q stat "$GCS_PATH" 2>/dev/null; then
-            # File exists, check if local file is newer or different
-            LOCAL_HASH=$(sha256sum "$DATA_FILE" | cut -d' ' -f1)
-            REMOTE_HASH=$(gsutil hash -h "$GCS_PATH" 2>/dev/null | grep "Hash (sha256)" | cut -d':' -f2 | tr -d ' ')
+            # File exists, compare sizes (much faster than hash)
+            LOCAL_SIZE=$(stat -c%s "$DATA_FILE" 2>/dev/null || stat -f%z "$DATA_FILE" 2>/dev/null)
+            REMOTE_SIZE=$(gsutil du "$GCS_PATH" | awk '{print $1}')
             
-            if [ "$LOCAL_HASH" = "$REMOTE_HASH" ]; then
-                echo "⏭️  Skipping (unchanged): $file"
+            if [ "$LOCAL_SIZE" = "$REMOTE_SIZE" ]; then
+                echo "⏭️  Skipping (same size): $file ($LOCAL_SIZE bytes)"
                 continue
             else
-                echo "🔄 Updating (changed): $file"
+                echo "🔄 Updating (size changed): $file (local: $LOCAL_SIZE, remote: $REMOTE_SIZE bytes)"
             fi
         else
             echo "📤 Uploading (new): $file"
@@ -157,6 +172,8 @@ yq '.paths.data_files[]' "$CONFIG_FILE" | while read -r file; do
         echo "⚠️ Data file not found: $file"
         echo "   Checked: $(pwd)/$file"
         echo "   Checked: $GIT_ROOT/$file"
+        echo "   Checked: $GIT_ROOT/labo3/$file"
+        echo "   Checked: labo3/$file"
     fi
 done
 
@@ -189,7 +206,7 @@ gcloud compute instances add-metadata $ORCHESTRATOR_VM \
 echo "✅ Deployment triggered with ID: $DEPLOY_ID"
 echo ""
 echo "📊 Monitor deployment with:"
-echo "  gcloud compute ssh $ORCHESTRATOR_VM --zone=$ZONE --command='tmux attach-session -t orchestrator'"
+echo "  gcloud compute ssh $ORCHESTRATOR_VM --zone=$ZONE --command='sudo tmux attach-session -t orchestrator'"
 echo ""
 echo "📈 Check MLflow at:"
 echo "  http://$(gcloud compute instances describe $ORCHESTRATOR_VM --zone=$ZONE --format='value(networkInterfaces[0].accessConfigs[0].natIP)'):5000"

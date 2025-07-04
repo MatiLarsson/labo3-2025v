@@ -18,15 +18,22 @@ ORIGINAL_DIR=$(pwd)
 # Load configuration
 CONFIG_FILE="project_config.yml"
 
-# First check current directory, then git root
+# Check multiple locations for config file
 if [ ! -f "$CONFIG_FILE" ]; then
     if [ -f "$GIT_ROOT/$CONFIG_FILE" ]; then
         CONFIG_FILE="$GIT_ROOT/$CONFIG_FILE"
         echo "📋 Using config from git root: $CONFIG_FILE"
+    elif [ -f "$GIT_ROOT/labo3/$CONFIG_FILE" ]; then
+        CONFIG_FILE="$GIT_ROOT/labo3/$CONFIG_FILE"
+        echo "📋 Using config from labo3 subdirectory: $CONFIG_FILE"
+    elif [ -f "labo3/$CONFIG_FILE" ]; then
+        CONFIG_FILE="labo3/$CONFIG_FILE"
+        echo "📋 Using config from labo3 subdirectory: $CONFIG_FILE"
     else
-        echo "❌ project_config.yml not found in current directory or git root!"
+        echo "❌ project_config.yml not found in any expected location!"
         echo "   Current: $(pwd)/$CONFIG_FILE"
         echo "   Git root: $GIT_ROOT/$CONFIG_FILE"
+        echo "   Labo3: $GIT_ROOT/labo3/$CONFIG_FILE"
         exit 1
     fi
 fi
@@ -56,16 +63,23 @@ echo ""
 # Authenticate with service account
 echo "🔑 Authenticating with GCP..."
 
-# Check for service account in current directory or git root
+# Check for service account in multiple locations
 SERVICE_ACCOUNT_FILE="service-account.json"
 if [ ! -f "$SERVICE_ACCOUNT_FILE" ]; then
     if [ -f "$GIT_ROOT/$SERVICE_ACCOUNT_FILE" ]; then
         SERVICE_ACCOUNT_FILE="$GIT_ROOT/$SERVICE_ACCOUNT_FILE"
         echo "🔑 Using service account from git root: $SERVICE_ACCOUNT_FILE"
+    elif [ -f "$GIT_ROOT/labo3/$SERVICE_ACCOUNT_FILE" ]; then
+        SERVICE_ACCOUNT_FILE="$GIT_ROOT/labo3/$SERVICE_ACCOUNT_FILE"
+        echo "🔑 Using service account from labo3 subdirectory: $SERVICE_ACCOUNT_FILE"
+    elif [ -f "labo3/$SERVICE_ACCOUNT_FILE" ]; then
+        SERVICE_ACCOUNT_FILE="labo3/$SERVICE_ACCOUNT_FILE"
+        echo "🔑 Using service account from labo3 subdirectory: $SERVICE_ACCOUNT_FILE"
     else
-        echo "❌ service-account.json not found in current directory or git root!"
+        echo "❌ service-account.json not found in any expected location!"
         echo "   Current: $(pwd)/$SERVICE_ACCOUNT_FILE"
         echo "   Git root: $GIT_ROOT/$SERVICE_ACCOUNT_FILE"
+        echo "   Labo3: $GIT_ROOT/labo3/$SERVICE_ACCOUNT_FILE"
         exit 1
     fi
 fi
@@ -126,4 +140,4 @@ echo "📋 Check orchestrator logs:"
 echo "  gcloud compute instances get-serial-port-output $ORCHESTRATOR_VM --zone=$ZONE"
 echo ""
 echo "🎯 To start a new experiment after abort:"
-echo "  ./scripts/deploy.sh"
+echo "  ./deploy.sh"

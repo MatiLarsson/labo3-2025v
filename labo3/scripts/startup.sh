@@ -177,37 +177,46 @@ gsutil cp gs://$BUCKET_NAME/config/project_config.yml ./config.yml
 echo "📦 Cloning/updating experiment repository..."
 REPO_URL=\$(python3 -c "import yaml; print(yaml.safe_load(open('./config.yml'))['repository']['url'])")
 
-# Clone directly to current directory
-if [ -d ".git" ]; then
-    echo "🔄 Repository exists, pulling latest changes..."
-    git pull origin main || git pull origin master
-else
-    echo "📥 Cloning repository..."
-    git clone \$REPO_URL repo
-    cd repo
-    # Move contents to current directory
-    mv * ../ 2>/dev/null || true
-    mv .* ../ 2>/dev/null || true
-    cd ..
+# Clean clone approach
+if [ -d "repo" ]; then
     rm -rf repo
 fi
 
-# Now we're in /opt/worker/ with the repo contents
+echo "📥 Cloning repository..."
+git clone \$REPO_URL repo
+cd repo
+
+# Navigate to the labo3 subdirectory where the Python project is located
+echo "📁 Navigating to labo3 subdirectory..."
+if [ -d "labo3" ]; then
+    cd labo3
+    echo "✅ Found labo3 directory"
+else
+    echo "❌ labo3 directory not found in repository"
+    echo "📂 Repository root contents:"
+    ls -la
+    gcloud compute instances add-metadata \$(hostname) --metadata job-status=failed --zone=$ZONE
+    exit 1
+fi
+
+# Verify we have pyproject.toml
+echo "📍 Current directory: \$(pwd)"
+echo "📂 Contents:"
+ls -la
+
+if [ ! -f "pyproject.toml" ]; then
+    echo "❌ pyproject.toml not found in labo3 directory"
+    gcloud compute instances add-metadata \$(hostname) --metadata job-status=failed --zone=$ZONE
+    exit 1
+fi
 
 # Install uv for fast Python package management
 pip3 install uv
 
 # Install the package and dependencies from source using uv
 echo "📦 Installing package and dependencies from source..."
-if [ -f "pyproject.toml" ]; then
-    # Install in editable mode with all dependencies
-    uv pip install --system -e .
-    echo "✅ Package installed from source successfully"
-else
-    echo "❌ No pyproject.toml found in repository"
-    gcloud compute instances add-metadata \$(hostname) --metadata job-status=failed --zone=$ZONE
-    exit 1
-fi
+uv pip install --system -e .
+echo "✅ Package installed from source successfully"
 
 # Download environment file if exists
 echo "📄 Loading environment..."
@@ -224,7 +233,7 @@ echo "💡 Data files will be downloaded by ML script when required"
 # Run the ML script
 echo "🚀 Running ML script: $script_name"
 
-# Execute the script directly from scripts folder
+# Execute the script from the scripts folder (we're already in labo3/)
 if python3 scripts/$script_name 2>&1 | tee script_output.log; then
     SCRIPT_EXIT_CODE=0
     echo "✅ Script completed successfully"
@@ -238,7 +247,7 @@ echo "📤 Uploading results..."
 
 # Get deployment ID and experiment info for organized storage
 DEPLOY_ID=\$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/deploy-trigger" -H "Metadata-Flavor: Google" 2>/dev/null || echo "unknown")
-EXPERIMENT_NAME=\$(python3 -c "import yaml; print(yaml.safe_load(open('../config.yml'))['experiment_name'])" 2>/dev/null || echo "unknown")
+EXPERIMENT_NAME=\$(python3 -c "import yaml; print(yaml.safe_load(open('./config.yml'))['experiment_name'])" 2>/dev/null || echo "unknown")
 TIMESTAMP=\$(date '+%Y%m%d_%H%M%S')
 
 # Create organized results directory structure
@@ -253,7 +262,7 @@ if [ -f "script_output.log" ]; then
     gsutil cp script_output.log gs://$BUCKET_NAME/\$RESULTS_PATH/script_output.log
 fi
 
-# Upload any generated files
+# Upload any generated files (look in current directory which is labo3/)
 find . -maxdepth 2 \( -name "*.pkl" -o -name "*.joblib" -o -name "*.csv" -o -name "*.parquet" -o -name "*.json" -o -name "*.h5" -o -name "*.model" \) | while read -r file; do
     if [ -f "\$file" ]; then
         echo "📤 Uploading: \$file"
