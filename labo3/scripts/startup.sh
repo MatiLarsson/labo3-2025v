@@ -210,31 +210,43 @@ if [ ! -f "pyproject.toml" ]; then
     exit 1
 fi
 
-# Install uv for fast Python package management
+# Install uv globally
+echo "📦 Installing uv..."
 pip3 install uv
 
-# Install the package and dependencies from source using uv
-echo "📦 Installing package and dependencies from source..."
-uv pip install --system -e .
-echo "✅ Package installed from source successfully"
+# Create virtual environment using uv
+echo "🔧 Creating virtual environment with uv..."
+uv venv
+
+# Install the project and all dependencies using uv
+echo "📦 Installing project and dependencies in virtual environment..."
+uv pip install -e .
+
+echo "✅ Virtual environment created and project installed successfully"
 
 # Download environment file if exists
 echo "📄 Loading environment..."
 gsutil cp gs://$BUCKET_NAME/config/.env ./.env 2>/dev/null || echo "No .env file found"
 
-# Load environment variables
+# Activate virtual environment and run the ML script
+echo "🚀 Activating virtual environment and running ML script: $script_name"
+
+# Source the virtual environment and run the script
+source .venv/bin/activate
+
+# Load environment variables after activating venv
 set -a
 [ -f ./.env ] && source ./.env
 set +a
 
+echo "🐍 Using Python: \$(which python)"
+echo "🐍 Python version: \$(python --version)"
+
 # Data files will be downloaded by the ML script itself when needed
 echo "💡 Data files will be downloaded by ML script when required"
 
-# Run the ML script
-echo "🚀 Running ML script: $script_name"
-
 # Execute the script from the scripts folder (we're already in labo3/)
-if python3 scripts/$script_name 2>&1 | tee script_output.log; then
+if python scripts/$script_name 2>&1 | tee script_output.log; then
     SCRIPT_EXIT_CODE=0
     echo "✅ Script completed successfully"
 else
@@ -247,7 +259,7 @@ echo "📤 Uploading results..."
 
 # Get deployment ID and experiment info for organized storage
 DEPLOY_ID=\$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/deploy-trigger" -H "Metadata-Flavor: Google" 2>/dev/null || echo "unknown")
-EXPERIMENT_NAME=\$(python3 -c "import yaml; print(yaml.safe_load(open('./config.yml'))['experiment_name'])" 2>/dev/null || echo "unknown")
+EXPERIMENT_NAME=\$(python -c "import yaml; print(yaml.safe_load(open('./config.yml'))['experiment_name'])" 2>/dev/null || echo "unknown")
 TIMESTAMP=\$(date '+%Y%m%d_%H%M%S')
 
 # Create organized results directory structure
