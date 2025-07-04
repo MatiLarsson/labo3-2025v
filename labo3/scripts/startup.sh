@@ -162,6 +162,13 @@ echo "🏷️ Instance: $instance_name"
 apt-get update
 apt-get install -y curl git build-essential python3 python3-pip
 
+# Install yq for YAML parsing
+if [ ! -f "/usr/local/bin/yq" ]; then
+    echo "📦 Installing yq..."
+    wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+    chmod +x /usr/local/bin/yq
+fi
+
 # Setup workspace
 mkdir -p /opt/worker
 cd /opt/worker
@@ -238,7 +245,7 @@ gsutil cp gs://$BUCKET_NAME/config/.env ./.env 2>/dev/null || echo "No .env file
 
 # Get the current IP of the orchestrator VM (where MLflow is running)
 echo "🔍 Getting orchestrator VM IP for MLflow..."
-ORCHESTRATOR_VM_NAME=\$(yq '.orchestrator.vm_name' ./config.yml)
+ORCHESTRATOR_VM_NAME=\$(yq '.orchestrator.vm_name' ./project_config.yml)
 ORCHESTRATOR_IP=\$(gcloud compute instances describe \$ORCHESTRATOR_VM_NAME --zone=$ZONE --format="value(networkInterfaces[0].accessConfigs[0].natIP)" 2>/dev/null || echo "")
 
 if [ -n "\$ORCHESTRATOR_IP" ]; then
