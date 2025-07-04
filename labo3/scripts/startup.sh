@@ -1,26 +1,20 @@
 #!/bin/bash
-# startup-script.sh - Simple orchestrator VM startup script
+# startup-script.sh - Simple orchestrator VM startup script with abort support
 
 set -e
 exec > >(tee -a /var/log/orchestrator.log) 2>&1
 
 echo "$(date): 🚀 Orchestrator VM startup..."
 
-# Install dependencies
+# Install dependencies (gcloud is pre-installed on GCE)
 apt-get update
 apt-get install -y git curl tmux jq python3 python3-pip
 
-# Install Google Cloud SDK
-if [ ! -d "/opt/google-cloud-sdk" ]; then
-    cd /opt
-    export CLOUDSDK_INSTALL_DIR=/opt
-    curl https://sdk.cloud.google.com | bash
-    ln -sf /opt/google-cloud-sdk/bin/* /usr/local/bin/
-fi
-
 # Install yq
-wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
-chmod +x /usr/local/bin/yq
+if [ ! -f "/usr/local/bin/yq" ]; then
+    wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+    chmod +x /usr/local/bin/yq
+fi
 
 # Setup workspace
 WORKSPACE="/opt/orchestrator"
@@ -37,14 +31,14 @@ echo "$(date): 📦 Using bucket: $BUCKET_NAME"
 # Create the main orchestrator script that will run in tmux
 cat > /opt/orchestrator/main_orchestrator.sh << 'EOF'
 #!/bin/bash
-# Main orchestrator script - runs continuously in tmux
+# Main orchestrator script - runs continuously in tmux with abort support
 
 set -e
 
 WORKSPACE="/opt/orchestrator"
 cd $WORKSPACE
 
-echo "🎯 Starting ML Orchestrator..."
+echo "🎯 Starting ML Orchestrator with abort support..."
 
 # Get bucket name from VM metadata
 BUCKET_NAME=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/bucket-name" -H "Metadata-Flavor: Google" 2>/dev/null || echo "labo3_bucket")
@@ -164,19 +158,15 @@ echo "\$(date): 🔧 Starting ML Worker..."
 echo "📋 Script: $script_name"
 echo "🏷️ Instance: $instance_name"
 
-# Install dependencies
+# Install dependencies (gcloud is pre-installed on GCE)
 apt-get update
 apt-get install -y curl git build-essential python3 python3-pip
-
-# Install Google Cloud SDK
-curl https://sdk.cloud.google.com | bash
-export PATH="/root/google-cloud-sdk/bin:\$PATH"
 
 # Setup workspace
 mkdir -p /opt/worker
 cd /opt/worker
 
-# Set GCP project (worker VM inherits service account from orchestrator)
+# Set GCP project (gcloud is pre-installed on GCE instances)
 gcloud config set project $PROJECT_ID --quiet
 
 # Download configuration using VM's default service account
@@ -326,6 +316,56 @@ delete_instance() {
     gcloud compute instances delete $instance_name --zone=$ZONE --quiet 2>/dev/null || true
 }
 
+# NEW: Check for abort signal
+check_abort_signal() {
+    # Check metadata for abort trigger
+    local abort_trigger=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/abort-trigger" -H "Metadata-Flavor: Google" 2>/dev/null || echo "")
+    
+    # Only proceed if we got a non-empty response that looks like a real trigger
+    if [ -n "$abort_trigger" ] && [ "$abort_trigger" != "null" ] && [[ "$abort_trigger" != *"<!DOCTYPE"* ]] && [[ "$abort_trigger" != *"<html"* ]]; then
+        echo "🛑 ABORT SIGNAL DETECTED: $abort_trigger"
+        
+        # Clear the abort trigger metadata
+        INSTANCE_NAME=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/name" -H "Metadata-Flavor: Google")
+        gcloud compute instances remove-metadata $INSTANCE_NAME --keys=abort-trigger --zone=$ZONE --quiet
+        
+        # Also clear any pending deploy trigger
+        gcloud compute instances remove-metadata $INSTANCE_NAME --keys=deploy-trigger --zone=$ZONE --quiet
+        
+        return 0
+    fi
+    
+    return 1
+}
+
+# NEW: Abort current orchestration
+abort_orchestration() {
+    echo "🛑 ABORTING CURRENT ORCHESTRATION..."
+    
+    if [ "$orchestration_active" = true ]; then
+        echo "🧹 Cleaning up all running job instances..."
+        for i in $(seq 0 $((total_jobs-1))); do
+            instance_name=$(get_job_instance $i)
+            echo "🗑️ Terminating instance: $instance_name"
+            delete_instance $instance_name
+        done
+        
+        # Signal abort completion
+        echo "$(date -Iseconds): Orchestration aborted by user" | gsutil cp - gs://$BUCKET_NAME/status/orchestration-aborted.txt
+        
+        echo "✅ All instances terminated"
+    else
+        echo "💡 No active orchestration to abort"
+    fi
+    
+    # Reset orchestration state
+    orchestration_active=false
+    current_job=0
+    total_jobs=0
+    
+    echo "🔄 Returning to deployment signal monitoring..."
+}
+
 check_deployment_signal() {
     # Check metadata for deployment trigger
     local deploy_trigger=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/deploy-trigger" -H "Metadata-Flavor: Google" 2>/dev/null || echo "")
@@ -373,7 +413,15 @@ start_orchestration() {
 echo "⏰ Starting orchestration monitor (checking every $CHECK_INTERVAL seconds)..."
 
 while true; do
-    echo "$(date): 🔄 Checking for deployment signals..."
+    echo "$(date): 🔄 Checking for signals..."
+    
+    # Check for abort signal first (highest priority)
+    if check_abort_signal; then
+        abort_orchestration
+        # Continue to next iteration (skip deployment check)
+        sleep $CHECK_INTERVAL
+        continue
+    fi
     
     # Check for new deployment signals
     if check_deployment_signal; then
@@ -498,5 +546,5 @@ echo "$(date): 📺 Starting persistent orchestrator in tmux session..."
 tmux new-session -d -s orchestrator "/opt/orchestrator/main_orchestrator.sh"
 
 echo "$(date): 🎉 Startup complete!"
-echo "$(date): 💡 To view orchestrator logs: tmux attach-session -t orchestrator"
-echo "$(date): 💡 MLflow server managed by systemctl (if configured)"
+echo "$(date): 💡 To view orchestrator logs: sudo tmux attach-session -t orchestrator"
+echo "$(date): 💡 To abort experiments: use abort.sh script from local machine"

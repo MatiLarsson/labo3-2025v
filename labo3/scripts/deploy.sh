@@ -95,8 +95,8 @@ if [ ! -f "$SERVICE_ACCOUNT_FILE" ]; then
     fi
 fi
 
-gcloud auth activate-service-account --key-file="$SERVICE_ACCOUNT_FILE"
-gcloud config set project $PROJECT_ID
+gcloud auth activate-service-account --key-file="$SERVICE_ACCOUNT_FILE" --quiet
+gcloud config set project $PROJECT_ID --quiet
 
 # 3. Build package (skip this - we'll install directly on workers)
 echo "📦 Skipping package build - workers will install from source"
@@ -122,7 +122,7 @@ if [ -n "$ENV_FILE" ]; then
     gsutil cp "$ENV_FILE" gs://$BUCKET_NAME/config/
 fi
 
-# 5. Upload data files
+# 5. Upload data files (with existence check)
 echo "📁 Uploading data files..."
 yq '.paths.data_files[]' "$CONFIG_FILE" | while read -r file; do
     # Check file in current directory first, then git root
@@ -134,8 +134,25 @@ yq '.paths.data_files[]' "$CONFIG_FILE" | while read -r file; do
     fi
     
     if [ -n "$DATA_FILE" ]; then
-        echo "📤 Uploading: $DATA_FILE"
-        gsutil cp "$DATA_FILE" gs://$BUCKET_NAME/$file
+        GCS_PATH="gs://$BUCKET_NAME/$file"
+        
+        # Check if file already exists in GCS
+        if gsutil -q stat "$GCS_PATH" 2>/dev/null; then
+            # File exists, check if local file is newer or different
+            LOCAL_HASH=$(sha256sum "$DATA_FILE" | cut -d' ' -f1)
+            REMOTE_HASH=$(gsutil hash -h "$GCS_PATH" 2>/dev/null | grep "Hash (sha256)" | cut -d':' -f2 | tr -d ' ')
+            
+            if [ "$LOCAL_HASH" = "$REMOTE_HASH" ]; then
+                echo "⏭️  Skipping (unchanged): $file"
+                continue
+            else
+                echo "🔄 Updating (changed): $file"
+            fi
+        else
+            echo "📤 Uploading (new): $file"
+        fi
+        
+        gsutil cp "$DATA_FILE" "$GCS_PATH"
     else
         echo "⚠️ Data file not found: $file"
         echo "   Checked: $(pwd)/$file"
