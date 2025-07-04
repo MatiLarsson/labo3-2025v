@@ -199,13 +199,21 @@ else
     exit 1
 fi
 
-# Verify we have pyproject.toml
+# Verify we have pyproject.toml and project_config.yml
 echo "📍 Current directory: \$(pwd)"
 echo "📂 Contents:"
 ls -la
 
 if [ ! -f "pyproject.toml" ]; then
     echo "❌ pyproject.toml not found in labo3 directory"
+    gcloud compute instances add-metadata \$(hostname) --metadata job-status=failed --zone=$ZONE
+    exit 1
+fi
+
+if [ ! -f "project_config.yml" ]; then
+    echo "❌ project_config.yml not found in labo3 directory"
+    echo "📁 Available files:"
+    find . -name "*.yml" -o -name "*.yaml"
     gcloud compute instances add-metadata \$(hostname) --metadata job-status=failed --zone=$ZONE
     exit 1
 fi
@@ -257,9 +265,10 @@ fi
 # Upload results regardless of success/failure
 echo "📤 Uploading results..."
 
-# Get deployment ID and experiment info for organized storage
-DEPLOY_ID=\$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/deploy-trigger" -H "Metadata-Flavor: Google" 2>/dev/null || echo "unknown")
-EXPERIMENT_NAME=\$(python -c "import yaml; print(yaml.safe_load(open('./config.yml'))['experiment_name'])" 2>/dev/null || echo "unknown")
+# Get deployment ID from worker instance metadata (safer approach)
+INSTANCE_NAME=\$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/name" -H "Metadata-Flavor: Google" 2>/dev/null || echo "unknown-worker")
+DEPLOY_ID=\$(date '+%Y%m%d_%H%M%S')  # Use timestamp as deployment ID
+EXPERIMENT_NAME=\$(python -c "import yaml; print(yaml.safe_load(open('./project_config.yml'))['experiment_name'])" 2>/dev/null || echo "unknown")
 TIMESTAMP=\$(date '+%Y%m%d_%H%M%S')
 
 # Create organized results directory structure
