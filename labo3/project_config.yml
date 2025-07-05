@@ -1,8 +1,4 @@
-project:
-  name: "multinational"
-  version: "1.0.0"
-
-experiment_name: "demand_forecasting_exp_6"
+experiment_name: "demand_forecasting_exp_7"
 
 gcp:
   project_id: "labo3-464122"
@@ -11,32 +7,16 @@ gcp:
   region: "us-east1"
   blob_path: "data"
 
-orchestrator:
-  vm_name: "node0"
-  machine_type: "e2-standard-2"
-  check_interval: 60  # seconds
-
 repository:
   url: "https://github.com/MatiLarsson/labo3-2025v.git"
   branch: "main"
 
 jobs:
-  - name: "dataset"
-    script: "run_dataset.py"
-    instance_name: "dataset-worker"
-    machine_type: "n1-highmem-16" # "n1-highmem-16" -> 16 CPU, 104GB RAM
-    preemptible: true
-    
   - name: "model"
-    script: "run_model.py" 
-    instance_name: "model-worker"
+    script: "run.py" 
+    instance_name: "worker"
     machine_type: "n2-highmem-64" # "n2-highmem-64" -> 64 CPU, 512GB RAM
     preemptible: true
-    depends_on: "dataset"
-
-docker:
-  orchestrator_image: "orchestrator:latest"
-  worker_image: "worker:latest"
 
 paths:
   data_files:

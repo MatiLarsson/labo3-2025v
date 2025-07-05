@@ -1,203 +1,136 @@
 #!/bin/bash
-# deploy.sh - Simple deployment script for ML experiments
-# Can be run from anywhere within the git repository
+# deploy.sh - Simple ML job deployment
 
 set -e
 
-# Suppress urllib3 warnings
-export PYTHONWARNINGS="ignore:urllib3"
-
-# Find git repository root first
-echo "🔍 Detecting git repository..."
-GIT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
-if [ -z "$GIT_ROOT" ]; then
-    echo "❌ Not in a git repository! Please run from within a git repository."
-    exit 1
-fi
-
-ORIGINAL_DIR=$(pwd)
-
-# Load configuration
+# Find config file
 CONFIG_FILE="project_config.yml"
+[ ! -f "$CONFIG_FILE" ] && CONFIG_FILE="$(git rev-parse --show-toplevel)/labo3/project_config.yml"
 
-# Check multiple locations for config file
-if [ ! -f "$CONFIG_FILE" ]; then
-    if [ -f "$GIT_ROOT/$CONFIG_FILE" ]; then
-        CONFIG_FILE="$GIT_ROOT/$CONFIG_FILE"
-    elif [ -f "$GIT_ROOT/labo3/$CONFIG_FILE" ]; then
-        CONFIG_FILE="$GIT_ROOT/labo3/$CONFIG_FILE"
-    elif [ -f "labo3/$CONFIG_FILE" ]; then
-        CONFIG_FILE="labo3/$CONFIG_FILE"
-    else
-        echo "❌ project_config.yml not found!"
-        exit 1
-    fi
-fi
-
-# Parse YAML config (requires yq)
-if ! command -v yq &> /dev/null; then
-    echo "📦 Installing yq..."
-    if command -v brew &> /dev/null; then
-        brew install yq > /dev/null 2>&1
-    else
-        sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 2>/dev/null
-        sudo chmod +x /usr/local/bin/yq
-    fi
-fi
-
+# Parse config
 PROJECT_ID=$(yq '.gcp.project_id' $CONFIG_FILE)
 BUCKET_NAME=$(yq '.gcp.bucket_name' $CONFIG_FILE)
-ORCHESTRATOR_VM=$(yq '.orchestrator.vm_name' $CONFIG_FILE)
 ZONE=$(yq '.gcp.zone' $CONFIG_FILE)
+SCRIPT_NAME=$(yq '.jobs[0].script' $CONFIG_FILE)
+INSTANCE_NAME=$(yq '.jobs[0].instance_name' $CONFIG_FILE)
+MACHINE_TYPE=$(yq '.jobs[0].machine_type' $CONFIG_FILE)
+REPO_URL=$(yq '.repository.url' $CONFIG_FILE)
 
-echo "🚀 Deploying $(yq '.project.name' $CONFIG_FILE) to $PROJECT_ID"
+echo "🚀 Deploying ML job: $INSTANCE_NAME"
 
-# 1. Git operations
-echo "📝 Pushing latest changes..."
-cd "$GIT_ROOT"
+# Push code
+git add . && git commit -m "Deploy $(date)" || true
+git push
 
-if ! git diff-index --quiet HEAD -- 2>/dev/null; then
-    git add . > /dev/null 2>&1
-    git commit -m "Deploy: $(date '+%Y-%m-%d %H:%M:%S')" > /dev/null 2>&1 || true
-fi
+# Auth GCP
+gcloud auth activate-service-account --key-file=service-account.json --quiet
+gcloud config set project $PROJECT_ID --quiet
 
-git push origin main > /dev/null 2>&1 || git push origin master > /dev/null 2>&1 || {
-    echo "❌ Failed to push to remote repository"
-    exit 1
-}
-
-cd "$ORIGINAL_DIR"
-
-# 2. Authenticate with GCP
-echo "🔑 Authenticating with GCP..."
-
-SERVICE_ACCOUNT_FILE="service-account.json"
-if [ ! -f "$SERVICE_ACCOUNT_FILE" ]; then
-    if [ -f "$GIT_ROOT/$SERVICE_ACCOUNT_FILE" ]; then
-        SERVICE_ACCOUNT_FILE="$GIT_ROOT/$SERVICE_ACCOUNT_FILE"
-    else
-        echo "❌ service-account.json not found!"
-        exit 1
-    fi
-fi
-
-gcloud auth activate-service-account --key-file="$SERVICE_ACCOUNT_FILE" --quiet 2>/dev/null
-gcloud config set project $PROJECT_ID --quiet 2>/dev/null
-
-# 3. Upload configuration
-echo "☁️ Uploading configuration..."
-gsutil -q cp "$CONFIG_FILE" gs://$BUCKET_NAME/config/ 2>/dev/null
-
-# 4. Process and upload .env file
+# Process and upload .env file
 echo "📄 Processing environment file..."
-
 ENV_FILE=""
 if [ -f ".env" ]; then
     ENV_FILE=".env"
-elif [ -f "$GIT_ROOT/.env" ]; then
-    ENV_FILE="$GIT_ROOT/.env"
-elif [ -f "$GIT_ROOT/labo3/.env" ]; then
-    ENV_FILE="$GIT_ROOT/labo3/.env"
-elif [ -f "labo3/.env" ]; then
-    ENV_FILE="labo3/.env"
+elif [ -f "$(git rev-parse --show-toplevel)/.env" ]; then
+    ENV_FILE="$(git rev-parse --show-toplevel)/.env"
+elif [ -f "$(git rev-parse --show-toplevel)/labo3/.env" ]; then
+    ENV_FILE="$(git rev-parse --show-toplevel)/labo3/.env"
 fi
 
 if [ -n "$ENV_FILE" ]; then
-    # Get current orchestrator VM IP
-    ORCHESTRATOR_IP=$(gcloud compute instances describe $ORCHESTRATOR_VM --zone=$ZONE --format="value(networkInterfaces[0].accessConfigs[0].natIP)" 2>/dev/null || echo "")
+    # Get node0 IP for MLflow
+    NODE0_IP=$(gcloud compute instances describe node0 --zone=$ZONE --format="value(networkInterfaces[0].accessConfigs[0].natIP)" 2>/dev/null || echo "")
     
-    if [ -n "$ORCHESTRATOR_IP" ]; then
-        # Create clean .env file for GCP
-        cat > .env.gcp << GCP_ENV_EOF
+    # Create clean .env file for GCP
+    cat > .env.gcp << GCP_ENV_EOF
 # MLflow tracking server (set by deploy.sh)
-MLFLOW_TRACKING_URI=http://$ORCHESTRATOR_IP:5000
+MLFLOW_TRACKING_URI=http://$NODE0_IP:5000
+
+# Use VM's default service account
+GOOGLE_APPLICATION_CREDENTIALS=""
 
 GCP_ENV_EOF
-        
-        # Add other non-credential variables
-        if [ -f "$ENV_FILE" ]; then
-            grep -v "^MLFLOW_TRACKING_URI=" "$ENV_FILE" | \
-            grep -v "^GOOGLE_APPLICATION_CREDENTIALS=" | \
-            grep -v "^#" | \
-            grep -v "^$" >> .env.gcp 2>/dev/null || true
-        fi
-        
-        gsutil -q cp .env.gcp gs://$BUCKET_NAME/config/.env 2>/dev/null
-        rm -f .env.gcp
-        
-        echo "✅ Environment configured with MLflow at $ORCHESTRATOR_IP:5000"
-    else
-        echo "⚠️ Could not get orchestrator IP - worker will determine MLflow URI"
-    fi
-else
-    # Create basic .env file
-    echo "MLFLOW_TRACKING_URI=http://orchestrator:5000" | gsutil -q cp - gs://$BUCKET_NAME/config/.env 2>/dev/null
-fi
-
-# 5. Upload data files
-echo "📁 Checking data files..."
-DATA_FILES_UPLOADED=0
-DATA_FILES_SKIPPED=0
-
-yq '.paths.data_files[]' "$CONFIG_FILE" | while read -r file; do
-    # Find the data file
-    DATA_FILE=""
-    if [ -f "$file" ]; then
-        DATA_FILE="$file"
-    elif [ -f "$GIT_ROOT/$file" ]; then
-        DATA_FILE="$GIT_ROOT/$file"
-    elif [ -f "$GIT_ROOT/labo3/$file" ]; then
-        DATA_FILE="$GIT_ROOT/labo3/$file"
-    elif [ -f "labo3/$file" ]; then
-        DATA_FILE="labo3/$file"
+    
+    # Add other non-credential variables
+    if [ -f "$ENV_FILE" ]; then
+        grep -v "^MLFLOW_TRACKING_URI=" "$ENV_FILE" | \
+        grep -v "^GOOGLE_APPLICATION_CREDENTIALS=" | \
+        grep -v "^#" | \
+        grep -v "^$" >> .env.gcp 2>/dev/null || true
     fi
     
-    if [ -n "$DATA_FILE" ]; then
-        GCS_PATH="gs://$BUCKET_NAME/$file"
-        
-        # Check if file needs uploading
-        if gsutil -q stat "$GCS_PATH" 2>/dev/null; then
-            LOCAL_SIZE=$(stat -c%s "$DATA_FILE" 2>/dev/null || stat -f%z "$DATA_FILE" 2>/dev/null)
-            REMOTE_SIZE=$(gsutil du "$GCS_PATH" 2>/dev/null | awk '{print $1}')
-            
-            if [ "$LOCAL_SIZE" = "$REMOTE_SIZE" ]; then
-                continue  # Skip - same size
-            fi
-        fi
-        
-        # Upload the file
-        gsutil -q cp "$DATA_FILE" "$GCS_PATH" 2>/dev/null
-        echo "  📤 $(basename "$file")"
+    gsutil cp .env.gcp gs://$BUCKET_NAME/config/.env
+    rm -f .env.gcp
+    
+    echo "✅ Environment configured with MLflow at $NODE0_IP:5000"
+else
+    # Create basic .env file
+    NODE0_IP=$(gcloud compute instances describe node0 --zone=$ZONE --format="value(networkInterfaces[0].accessConfigs[0].natIP)" 2>/dev/null || echo "node0")
+    echo "MLFLOW_TRACKING_URI=http://$NODE0_IP:5000" | gsutil cp - gs://$BUCKET_NAME/config/.env
+fi
+
+# Upload data files (only if they don't exist in GCS)
+yq '.paths.data_files[]' $CONFIG_FILE | while read file; do
+    if ! gsutil -q stat gs://$BUCKET_NAME/$file 2>/dev/null; then
+        gsutil cp $file gs://$BUCKET_NAME/$file && echo "📤 Uploaded: $file"
+    else
+        echo "✅ Exists: $file"
     fi
 done
 
-# 6. Check and start VM if needed
-echo "🔍 Checking orchestrator VM..."
-VM_STATUS=$(gcloud compute instances describe $ORCHESTRATOR_VM --zone=$ZONE --format="value(status)" 2>/dev/null || echo "NOT_FOUND")
+# Create startup script inline
+STARTUP_SCRIPT='#!/bin/bash
+apt-get update && apt-get install -y git tmux python3-pip wget
+wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+chmod +x /usr/local/bin/yq
+pip3 install uv
 
-if [ "$VM_STATUS" != "RUNNING" ]; then
-    if [ "$VM_STATUS" = "NOT_FOUND" ]; then
-        echo "❌ Orchestrator VM not found! Please create it first."
-        exit 1
-    else
-        echo "🚀 Starting orchestrator VM..."
-        gcloud compute instances start $ORCHESTRATOR_VM --zone=$ZONE > /dev/null 2>&1
-        echo "⏳ Waiting for VM to be ready..."
-        sleep 30
-    fi
-fi
+cd /opt
+PROJECT_ID=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/project-id" -H "Metadata-Flavor: Google")
+BUCKET_NAME=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/bucket-name" -H "Metadata-Flavor: Google")
+SCRIPT_NAME=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/script-name" -H "Metadata-Flavor: Google")
+REPO_URL=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/repo-url" -H "Metadata-Flavor: Google")
 
-# 7. Trigger deployment
-echo "🎯 Triggering deployment..."
-DEPLOY_ID=$(date '+%Y%m%d_%H%M%S')
+gcloud config set project $PROJECT_ID --quiet
 
-gcloud compute instances add-metadata $ORCHESTRATOR_VM \
+# Clone repo
+git clone $REPO_URL repo
+cd repo/labo3
+
+# Setup Python environment
+uv venv && source .venv/bin/activate
+uv pip install -e .
+
+# Download .env file
+gsutil cp gs://$BUCKET_NAME/config/.env .env 2>/dev/null || echo "No .env file found"
+
+# Download data files
+yq '"'"'.paths.data_files[]'"'"' project_config.yml | while read file; do
+    mkdir -p $(dirname $file)
+    gsutil cp gs://$BUCKET_NAME/$file $file
+done
+
+# Run ML script in tmux
+tmux new-session -d -s ml "source .venv/bin/activate && source .env && python scripts/$SCRIPT_NAME"
+
+# Wait for completion and upload results
+while tmux has-session -t ml 2>/dev/null; do sleep 30; done
+
+DEPLOY_ID=$(date '"'"'+%Y%m%d_%H%M%S'"'"')
+gsutil -m cp *.pkl *.csv *.parquet *.json gs://$BUCKET_NAME/results/$DEPLOY_ID/ 2>/dev/null || true
+
+shutdown -h +1'
+
+# Create instance
+gcloud compute instances create $INSTANCE_NAME \
     --zone=$ZONE \
-    --metadata deploy-trigger="$DEPLOY_ID" > /dev/null 2>&1
+    --machine-type=$MACHINE_TYPE \
+    --image-family=ubuntu-2204-lts \
+    --image-project=ubuntu-os-cloud \
+    --scopes=cloud-platform \
+    --preemptible \
+    --metadata startup-script="$STARTUP_SCRIPT" \
+    --metadata project-id=$PROJECT_ID,bucket-name=$BUCKET_NAME,script-name=$SCRIPT_NAME,repo-url=$REPO_URL
 
-echo ""
-echo "✅ Deployment triggered successfully!"
-echo ""
-echo "📊 Monitor: gcloud compute ssh $ORCHESTRATOR_VM --zone=$ZONE --command='sudo tmux attach-session -t orchestrator'"
-echo "📈 MLflow: http://$(gcloud compute instances describe $ORCHESTRATOR_VM --zone=$ZONE --format='value(networkInterfaces[0].accessConfigs[0].natIP)' 2>/dev/null):5000"
-echo "📋 Logs: gcloud compute instances get-serial-port-output $ORCHESTRATOR_VM --zone=$ZONE"
+echo "✅ Instance created: $INSTANCE_NAME"
+echo "📊 Monitor: gcloud compute ssh $INSTANCE_NAME --zone=$ZONE --command='tmux attach -t ml'"
