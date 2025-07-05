@@ -80,6 +80,7 @@ fi
 orchestration_active=false
 current_job=0
 total_jobs=0
+completed_jobs=()  # Track completed jobs persistently
 
 # Helper functions
 get_job_name() {
@@ -114,6 +115,15 @@ check_job_completion() {
     echo "${status:-running}"
 }
 
+# Record job completion persistently
+record_job_completion() {
+    local job_name=$1
+    completed_jobs+=("$job_name")
+    echo "📝 Recorded completion: $job_name"
+    echo "✅ Completed jobs: ${completed_jobs[*]}"
+}
+
+# Improved dependency checking with persistent state
 check_dependencies_completed() {
     local job_index=$1
     local dependencies=$(get_job_dependencies $job_index)
@@ -122,19 +132,40 @@ check_dependencies_completed() {
         return 0  # No dependencies
     fi
     
-    # Check if dependency job completed
+    echo "🔍 Checking dependencies for job $job_index: $dependencies"
+    
+    # Check if dependency job completed (using persistent record)
     for dep in $(echo "$dependencies" | tr ',' ' '); do
         local dep_completed=false
-        for i in $(seq 0 $((total_jobs-1))); do
-            if [ "$(get_job_name $i)" = "$dep" ]; then
-                local dep_instance=$(get_job_instance $i)
-                local completion_status=$(check_job_completion $dep_instance)
-                if [ "$completion_status" = "completed" ]; then
-                    dep_completed=true
-                    break
-                fi
+        
+        # Check if dependency is in completed jobs array
+        for completed_job in "${completed_jobs[@]}"; do
+            if [ "$completed_job" = "$dep" ]; then
+                dep_completed=true
+                echo "✅ Dependency $dep already completed"
+                break
             fi
         done
+        
+        # If not in completed array, check if it's currently running and completed
+        if [ "$dep_completed" = false ]; then
+            for i in $(seq 0 $((total_jobs-1))); do
+                if [ "$(get_job_name $i)" = "$dep" ]; then
+                    local dep_instance=$(get_job_instance $i)
+                    local instance_status=$(check_instance_status $dep_instance)
+                    
+                    # Only check job completion if instance exists
+                    if [ "$instance_status" != "NOT_FOUND" ]; then
+                        local completion_status=$(check_job_completion $dep_instance)
+                        if [ "$completion_status" = "completed" ]; then
+                            dep_completed=true
+                            echo "✅ Dependency $dep completed (live check)"
+                            break
+                        fi
+                    fi
+                fi
+            done
+        fi
         
         if [ "$dep_completed" = false ]; then
             echo "⏳ Dependency $dep not yet completed"
@@ -142,6 +173,7 @@ check_dependencies_completed() {
         fi
     done
     
+    echo "✅ All dependencies satisfied"
     return 0  # All dependencies completed
 }
 
@@ -391,7 +423,7 @@ delete_instance() {
     gcloud compute instances delete $instance_name --zone=$ZONE --quiet 2>/dev/null || true
 }
 
-# NEW: Check for abort signal
+# Check for abort signal
 check_abort_signal() {
     # Check metadata for abort trigger
     local abort_trigger=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/abort-trigger" -H "Metadata-Flavor: Google" 2>/dev/null || echo "")
@@ -413,7 +445,7 @@ check_abort_signal() {
     return 1
 }
 
-# NEW: Abort current orchestration
+# Abort current orchestration
 abort_orchestration() {
     echo "🛑 ABORTING CURRENT ORCHESTRATION..."
     
@@ -437,6 +469,7 @@ abort_orchestration() {
     orchestration_active=false
     current_job=0
     total_jobs=0
+    completed_jobs=()  # Reset completed jobs tracking
     
     echo "🔄 Returning to deployment signal monitoring..."
 }
@@ -473,6 +506,7 @@ start_orchestration() {
     orchestration_active=true
     current_job=0
     total_jobs=$(yq '.jobs | length' ./config.yml)
+    completed_jobs=()  # Reset completed jobs tracking
     
     # Clean up any existing job instances
     echo "🧹 Cleaning up existing job instances..."
@@ -534,6 +568,10 @@ while true; do
                         case $completion in
                             "completed")
                                 echo "✅ Job $job_name completed successfully"
+                                
+                                # Record completion BEFORE deleting instance
+                                record_job_completion "$job_name"
+                                
                                 echo "🗑️ Cleaning up completed instance..."
                                 delete_instance $instance_name
                                 ((current_job++))
@@ -558,19 +596,27 @@ while true; do
                         ;;
                         
                     "TERMINATED"|"STOPPING"|"STOPPED")
-                        echo "💥 Instance $instance_name died! Checking if job completed..."
+                        echo "🔍 Instance $instance_name stopped, checking if job completed first..."
                         completion=$(check_job_completion $instance_name)
                         if [ "$completion" = "completed" ]; then
-                            echo "✅ Job $job_name completed before instance died"
+                            echo "✅ Job $job_name completed successfully before shutdown"
+                            
+                            # Record completion BEFORE deleting instance
+                            record_job_completion "$job_name"
+                            
                             delete_instance $instance_name
                             ((current_job++))
                             echo "📈 Moving to next job ($current_job/$total_jobs)"
-                        else
-                            echo "🔄 Job $job_name incomplete - spot VM died, recreating..."
+                        elif [ "$completion" = "failed" ]; then
+                            echo "❌ Job $job_name failed before shutdown"
                             delete_instance $instance_name
-                            echo "⏰ Waiting 30 seconds before recreating died instance..."
+                            echo "⏰ Waiting 60 seconds before recreating failed job..."
+                            sleep 60
+                        else
+                            echo "🔄 Job $job_name incomplete - instance stopped unexpectedly, recreating..."
+                            delete_instance $instance_name
+                            echo "⏰ Waiting 30 seconds before recreating stopped instance..."
                             sleep 30
-                            # Next cycle will recreate the instance (status will be NOT_FOUND)
                         fi
                         ;;
                         
@@ -601,6 +647,7 @@ while true; do
             echo "✅ Workflow orchestration cycle finished! Waiting for new deployments..."
             orchestration_active=false
             current_job=0
+            completed_jobs=()  # Reset for next deployment
         fi
     else
         echo "😴 No active orchestration, waiting for deployment trigger..."
