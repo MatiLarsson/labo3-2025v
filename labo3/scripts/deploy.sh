@@ -37,6 +37,7 @@ elif [ -f "$(git rev-parse --show-toplevel)/labo3/.env" ]; then
     ENV_FILE="$(git rev-parse --show-toplevel)/labo3/.env"
 fi
 
+# Overwrite .env with settings needed for GCP vms
 if [ -n "$ENV_FILE" ]; then
     NODE0_IP=$(gcloud compute instances describe node0 --zone=$ZONE --format="value(networkInterfaces[0].accessConfigs[0].natIP)" 2>/dev/null || echo "")
     cat > .env.gcp << GCP_ENV_EOF

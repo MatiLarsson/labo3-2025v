@@ -178,9 +178,7 @@ class GCSManager:
         Returns:
             bool: True if server is accessible
         """
-        try:
-            import requests
-            
+        try:            
             # Test server health endpoint
             health_url = f"{tracking_uri}/health"
             response = requests.get(health_url, timeout=10)
