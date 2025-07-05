@@ -111,10 +111,10 @@ yq '"'"'.paths.data_files[]'"'"' project_config.yml | while read file; do
 done
 
 # Run ML script in tmux
-tmux new-session -d -s ml "source .venv/bin/activate && source .env && python scripts/$SCRIPT_NAME"
+tmux new-session -d -s ml "source .venv/bin/activate && source .env 2>/dev/null || true && python scripts/$SCRIPT_NAME; echo ML_SCRIPT_DONE > /tmp/ml_done"
 
 # Wait for completion and upload results
-while tmux has-session -t ml 2>/dev/null; do sleep 30; done
+while [ ! -f /tmp/ml_done ]; do sleep 30; done
 
 DEPLOY_ID=$(date '"'"'+%Y%m%d_%H%M%S'"'"')
 gsutil -m cp *.pkl *.csv *.parquet *.json gs://$BUCKET_NAME/results/$DEPLOY_ID/ 2>/dev/null || true
