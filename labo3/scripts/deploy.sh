@@ -20,7 +20,7 @@ echo "🚀 Deploying ML job: $INSTANCE_NAME"
 
 # Push code
 git add . && git commit -m "Deploy $(date)" || true
-git push
+git push --set-upstream origin main 2>/dev/null || git push 2>/dev/null || echo "⚠️ Git push failed, continuing anyway"
 
 # Auth GCP
 gcloud auth activate-service-account --key-file=service-account.json --quiet
