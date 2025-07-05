@@ -23,8 +23,8 @@ git add . && git commit -m "Deploy $(date)" || true
 git push --set-upstream origin main 2>/dev/null || git push 2>/dev/null || echo "⚠️ Git push failed, continuing anyway"
 
 # Auth GCP
-gcloud auth activate-service-account --key-file=service-account.json --quiet
-gcloud config set project $PROJECT_ID --quiet
+gcloud auth activate-service-account --key-file=service-account.json --quiet 2>/dev/null
+gcloud config set project $PROJECT_ID --quiet 2>/dev/null
 
 # Process and upload .env file
 echo "📄 Processing environment file..."
@@ -129,8 +129,7 @@ gcloud compute instances create $INSTANCE_NAME \
     --image-project=ubuntu-os-cloud \
     --scopes=cloud-platform \
     --preemptible \
-    --metadata startup-script="$STARTUP_SCRIPT" \
-    --metadata project-id=$PROJECT_ID,bucket-name=$BUCKET_NAME,script-name=$SCRIPT_NAME,repo-url=$REPO_URL
+    --metadata startup-script="$STARTUP_SCRIPT",project-id=$PROJECT_ID,bucket-name=$BUCKET_NAME,script-name=$SCRIPT_NAME,repo-url=$REPO_URL
 
 echo "✅ Instance created: $INSTANCE_NAME"
 echo "📊 Monitor: gcloud compute ssh $INSTANCE_NAME --zone=$ZONE --command='tmux attach -t ml'"
