@@ -38,38 +38,29 @@ elif [ -f "$(git rev-parse --show-toplevel)/labo3/.env" ]; then
 fi
 
 if [ -n "$ENV_FILE" ]; then
-    # Get node0 IP for MLflow
     NODE0_IP=$(gcloud compute instances describe node0 --zone=$ZONE --format="value(networkInterfaces[0].accessConfigs[0].natIP)" 2>/dev/null || echo "")
-    
-    # Create clean .env file for GCP
     cat > .env.gcp << GCP_ENV_EOF
 # MLflow tracking server (set by deploy.sh)
 MLFLOW_TRACKING_URI=http://$NODE0_IP:5000
-
-# Use VM's default service account
 GOOGLE_APPLICATION_CREDENTIALS=""
-
 GCP_ENV_EOF
-    
-    # Add other non-credential variables
+
     if [ -f "$ENV_FILE" ]; then
         grep -v "^MLFLOW_TRACKING_URI=" "$ENV_FILE" | \
         grep -v "^GOOGLE_APPLICATION_CREDENTIALS=" | \
         grep -v "^#" | \
         grep -v "^$" >> .env.gcp 2>/dev/null || true
     fi
-    
+
     gsutil cp .env.gcp gs://$BUCKET_NAME/config/.env
     rm -f .env.gcp
-    
     echo "✅ Environment configured with MLflow at $NODE0_IP:5000"
 else
-    # Create basic .env file
     NODE0_IP=$(gcloud compute instances describe node0 --zone=$ZONE --format="value(networkInterfaces[0].accessConfigs[0].natIP)" 2>/dev/null || echo "node0")
     echo "MLFLOW_TRACKING_URI=http://$NODE0_IP:5000" | gsutil cp - gs://$BUCKET_NAME/config/.env
 fi
 
-# Upload data files (only if they don't exist in GCS)
+# Upload data files (only if they don't exist)
 yq '.paths.data_files[]' $CONFIG_FILE | while read file; do
     if ! gsutil -q stat gs://$BUCKET_NAME/$file 2>/dev/null; then
         gsutil cp $file gs://$BUCKET_NAME/$file && echo "📤 Uploaded: $file"
@@ -78,15 +69,18 @@ yq '.paths.data_files[]' $CONFIG_FILE | while read file; do
     fi
 done
 
-# Create startup script and save to temp file
+# Create startup script
 cat > /tmp/startup.sh << 'EOF'
 #!/bin/bash
+set -e
+
 apt-get update && apt-get install -y git tmux python3-pip wget
 wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
 chmod +x /usr/local/bin/yq
 pip3 install uv
 
 cd /opt
+
 PROJECT_ID=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/project-id" -H "Metadata-Flavor: Google")
 BUCKET_NAME=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/bucket-name" -H "Metadata-Flavor: Google")
 SCRIPT_NAME=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/script-name" -H "Metadata-Flavor: Google")
@@ -95,7 +89,7 @@ REPO_URL=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/
 gcloud config set project $PROJECT_ID --quiet
 
 git clone $REPO_URL repo
-cd repo/labo3
+cd repo  # ✅ fixed from `repo/labo3`
 
 uv venv && source .venv/bin/activate
 uv pip install -e .
@@ -108,10 +102,10 @@ yq '.paths.data_files[]' project_config.yml | while read file; do
 done
 
 echo "Starting ML script in tmux..."
-tmux new-session -d -s ml
+tmux new-session -d -s ml || echo "⚠️ Failed to start tmux"
 tmux send-keys -t ml "source .venv/bin/activate" Enter
-tmux send-keys -t ml "source .env 2>/dev/null || true" Enter  
-tmux send-keys -t ml "python scripts/$SCRIPT_NAME" Enter
+tmux send-keys -t ml "source .env 2>/dev/null || true" Enter
+tmux send-keys -t ml "python scripts/$SCRIPT_NAME 2>&1 | tee run.log" Enter
 tmux send-keys -t ml "echo ML_SCRIPT_DONE > /tmp/ml_done" Enter
 
 echo "Waiting for ML script to complete..."
@@ -123,6 +117,7 @@ done
 echo "ML script completed, uploading results..."
 DEPLOY_ID=$(date '+%Y%m%d_%H%M%S')
 gsutil -m cp *.pkl *.csv *.parquet *.json gs://$BUCKET_NAME/results/$DEPLOY_ID/ 2>/dev/null || true
+gsutil cp run.log gs://$BUCKET_NAME/results/$DEPLOY_ID/run.log 2>/dev/null || echo "⚠️ Could not upload run.log"
 
 shutdown -h +1
 EOF
@@ -141,5 +136,4 @@ gcloud compute instances create $INSTANCE_NAME \
 echo "✅ Instance created: $INSTANCE_NAME"
 echo "📊 Monitor: gcloud compute ssh $INSTANCE_NAME --zone=$ZONE --command='tmux attach -t ml'"
 
-# Clean up temp file
 rm /tmp/startup.sh
