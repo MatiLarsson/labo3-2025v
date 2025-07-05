@@ -72,18 +72,22 @@ class DatasetGenerator:
         }
         
         for table_name, filename in files.items():
-            # Check if script is runnig locally
+            # Check if script is running locally
             if self.gcp_manager.is_running_on_gcp():
                 content = self.gcp_manager.download_file_as_text(filename)
                 
-                # Archivo temporal para DuckDB
+                # Create temporary file for DuckDB
                 temp_path = f"/tmp/{filename}"
                 with open(temp_path, 'w') as f:
                     f.write(content)
                 
-                df = self.conn.query(f"SELECT DISTINCT * FROM read_csv_auto('{temp_path}')")
+                # Force immediate data loading by converting to dataframe first
+                df = self.conn.query(f"SELECT DISTINCT * FROM read_csv_auto('{temp_path}')").df()
+                
+                # Clean up temporary file
                 os.remove(temp_path)
-
+                
+                # Register the dataframe with DuckDB
                 self.conn.register(table_name, df)
 
                 logger.info(f"Downloaded and registered table '{table_name}'")
@@ -92,7 +96,6 @@ class DatasetGenerator:
                 path = os.path.join(local_dir, 'data', filename)
                 # Read local file directly
                 df = self.conn.query(f"SELECT DISTINCT * FROM read_csv_auto('{path}')")
-            
                 self.conn.register(table_name, df)
 
                 logger.info(f"Read and registered table '{table_name}'")
