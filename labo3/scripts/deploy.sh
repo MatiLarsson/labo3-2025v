@@ -78,8 +78,9 @@ yq '.paths.data_files[]' $CONFIG_FILE | while read file; do
     fi
 done
 
-# Create startup script inline
-STARTUP_SCRIPT='#!/bin/bash
+# Create startup script and save to temp file
+cat > /tmp/startup.sh << 'EOF'
+#!/bin/bash
 apt-get update && apt-get install -y git tmux python3-pip wget
 wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
 chmod +x /usr/local/bin/yq
@@ -93,24 +94,19 @@ REPO_URL=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/
 
 gcloud config set project $PROJECT_ID --quiet
 
-# Clone repo
 git clone $REPO_URL repo
 cd repo/labo3
 
-# Setup Python environment
 uv venv && source .venv/bin/activate
 uv pip install -e .
 
-# Download .env file
 gsutil cp gs://$BUCKET_NAME/config/.env .env 2>/dev/null || echo "No .env file found"
 
-# Download data files
-yq '"'"'.paths.data_files[]'"'"' project_config.yml | while read file; do
+yq '.paths.data_files[]' project_config.yml | while read file; do
     mkdir -p $(dirname $file)
     gsutil cp gs://$BUCKET_NAME/$file $file
 done
 
-# Run ML script in tmux
 echo "Starting ML script in tmux..."
 tmux new-session -d -s ml
 tmux send-keys -t ml "source .venv/bin/activate" Enter
@@ -118,7 +114,6 @@ tmux send-keys -t ml "source .env 2>/dev/null || true" Enter
 tmux send-keys -t ml "python scripts/$SCRIPT_NAME" Enter
 tmux send-keys -t ml "echo ML_SCRIPT_DONE > /tmp/ml_done" Enter
 
-# Wait for completion and upload results
 echo "Waiting for ML script to complete..."
 while [ ! -f /tmp/ml_done ]; do 
     echo "Still waiting... $(date)"
@@ -126,10 +121,11 @@ while [ ! -f /tmp/ml_done ]; do
 done
 
 echo "ML script completed, uploading results..."
-DEPLOY_ID=$(date '"'"'+%Y%m%d_%H%M%S'"'"')
+DEPLOY_ID=$(date '+%Y%m%d_%H%M%S')
 gsutil -m cp *.pkl *.csv *.parquet *.json gs://$BUCKET_NAME/results/$DEPLOY_ID/ 2>/dev/null || true
 
-shutdown -h +1'
+shutdown -h +1
+EOF
 
 # Create instance
 gcloud compute instances create $INSTANCE_NAME \
@@ -139,7 +135,11 @@ gcloud compute instances create $INSTANCE_NAME \
     --image-project=ubuntu-os-cloud \
     --scopes=cloud-platform \
     --preemptible \
-    --metadata startup-script="$STARTUP_SCRIPT",project-id=$PROJECT_ID,bucket-name=$BUCKET_NAME,script-name=$SCRIPT_NAME,repo-url=$REPO_URL
+    --metadata-from-file startup-script=/tmp/startup.sh \
+    --metadata project-id=$PROJECT_ID,bucket-name=$BUCKET_NAME,script-name=$SCRIPT_NAME,repo-url=$REPO_URL
 
 echo "✅ Instance created: $INSTANCE_NAME"
 echo "📊 Monitor: gcloud compute ssh $INSTANCE_NAME --zone=$ZONE --command='tmux attach -t ml'"
+
+# Clean up temp file
+rm /tmp/startup.sh
