@@ -89,7 +89,7 @@ REPO_URL=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/
 gcloud config set project $PROJECT_ID --quiet
 
 git clone $REPO_URL repo
-cd repo  # ✅ fixed from `repo/labo3`
+cd repo/labo3
 
 uv venv && source .venv/bin/activate
 uv pip install -e .
