@@ -116,7 +116,7 @@ gsutil cp "$CONFIG_FILE" gs://$BUCKET_NAME/config/
 
 echo "💡 Note: Workers will install package from source using uv"
 
-# Upload .env file with updated MLflow URI (check multiple locations)
+# Upload .env file with updated MLflow URI and cleaned for GCP environment
 ENV_FILE=""
 if [ -f ".env" ]; then
     ENV_FILE=".env"
@@ -129,7 +129,7 @@ elif [ -f "labo3/.env" ]; then
 fi
 
 if [ -n "$ENV_FILE" ]; then
-    echo "📄 Updating .env file with current orchestrator IP..."
+    echo "📄 Processing .env file for GCP deployment..."
     
     # Get current orchestrator VM IP
     ORCHESTRATOR_IP=$(gcloud compute instances describe $ORCHESTRATOR_VM --zone=$ZONE --format="value(networkInterfaces[0].accessConfigs[0].natIP)" 2>/dev/null || echo "")
@@ -137,26 +137,80 @@ if [ -n "$ENV_FILE" ]; then
     if [ -n "$ORCHESTRATOR_IP" ]; then
         echo "📡 Current orchestrator IP: $ORCHESTRATOR_IP"
         
-        # Create temporary .env file with updated MLflow URI
-        cp "$ENV_FILE" .env.tmp
+        # Create a cleaned .env file for GCP deployment
+        echo "🧹 Creating clean .env file for GCP environment..."
         
-        # Remove old MLFLOW_TRACKING_URI line and add new one
-        grep -v "MLFLOW_TRACKING_URI=" .env.tmp > .env.updated || cp .env.tmp .env.updated
-        echo "MLFLOW_TRACKING_URI=http://$ORCHESTRATOR_IP:5000" >> .env.updated
+        # Start with a clean file containing only MLflow URI
+        cat > .env.gcp << GCP_ENV_EOF
+# MLflow tracking server (dynamically set by deploy.sh)
+MLFLOW_TRACKING_URI=http://$ORCHESTRATOR_IP:5000
+
+# GCP Environment Configuration
+# Workers use VM default service account - no GOOGLE_APPLICATION_CREDENTIALS needed
+
+GCP_ENV_EOF
         
-        echo "📄 Uploading updated .env file: $ENV_FILE"
-        gsutil cp .env.updated gs://$BUCKET_NAME/config/.env
+        # Add any other non-credential environment variables from the original .env
+        # (excluding MLFLOW_TRACKING_URI and GOOGLE_APPLICATION_CREDENTIALS)
+        if [ -f "$ENV_FILE" ]; then
+            echo "📋 Adding other environment variables (excluding credentials)..."
+            grep -v "^MLFLOW_TRACKING_URI=" "$ENV_FILE" | \
+            grep -v "^GOOGLE_APPLICATION_CREDENTIALS=" | \
+            grep -v "^#" | \
+            grep -v "^$" >> .env.gcp || true
+        fi
         
-        # Clean up temporary files
-        rm -f .env.tmp .env.updated
+        echo "📄 Uploading cleaned .env file..."
+        gsutil cp .env.gcp gs://$BUCKET_NAME/config/.env
         
-        echo "✅ MLflow URI updated to: http://$ORCHESTRATOR_IP:5000"
+        # Clean up temporary file
+        rm -f .env.gcp
+        
+        echo "✅ Clean .env uploaded with MLflow URI: http://$ORCHESTRATOR_IP:5000"
+        echo "✅ GOOGLE_APPLICATION_CREDENTIALS removed (workers use VM default credentials)"
     else
-        echo "⚠️ Could not get orchestrator IP, uploading .env as-is"
-        gsutil cp "$ENV_FILE" gs://$BUCKET_NAME/config/
+        echo "⚠️ Could not get orchestrator IP, creating minimal .env"
+        
+        # Create minimal .env without orchestrator IP (worker will determine it)
+        cat > .env.gcp << MINIMAL_ENV_EOF
+# MLflow tracking server (will be set by worker)
+# MLFLOW_TRACKING_URI will be determined by worker
+
+# GCP Environment Configuration
+# Workers use VM default service account - no GOOGLE_APPLICATION_CREDENTIALS needed
+
+MINIMAL_ENV_EOF
+        
+        # Add other non-credential variables
+        if [ -f "$ENV_FILE" ]; then
+            grep -v "^MLFLOW_TRACKING_URI=" "$ENV_FILE" | \
+            grep -v "^GOOGLE_APPLICATION_CREDENTIALS=" | \
+            grep -v "^#" | \
+            grep -v "^$" >> .env.gcp || true
+        fi
+        
+        gsutil cp .env.gcp gs://$BUCKET_NAME/config/.env
+        rm -f .env.gcp
+        
+        echo "✅ Minimal .env uploaded (worker will set MLflow URI dynamically)"
     fi
 else
     echo "⚠️ No .env file found to upload"
+    
+    # Create a basic .env file for GCP environment
+    echo "📄 Creating basic .env file for GCP..."
+    cat > .env.gcp << BASIC_ENV_EOF
+# Basic GCP environment file created by deploy.sh
+# MLflow URI will be set by worker dynamically
+
+# GCP Environment Configuration
+# Workers use VM default service account
+BASIC_ENV_EOF
+    
+    gsutil cp .env.gcp gs://$BUCKET_NAME/config/.env
+    rm -f .env.gcp
+    
+    echo "✅ Basic .env file created and uploaded"
 fi
 
 # 5. Upload data files (with existence check)

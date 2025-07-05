@@ -239,7 +239,7 @@ uv pip install -e .
 
 echo "✅ Virtual environment created and project installed successfully"
 
-# Download environment file if exists
+# Download environment file (already cleaned by deploy.sh)
 echo "📄 Loading environment..."
 gsutil cp gs://$BUCKET_NAME/config/.env ./.env 2>/dev/null || echo "No .env file found"
 
@@ -251,10 +251,10 @@ ORCHESTRATOR_IP=\$(gcloud compute instances describe \$ORCHESTRATOR_VM_NAME --zo
 if [ -n "\$ORCHESTRATOR_IP" ]; then
     echo "📡 Found orchestrator IP: \$ORCHESTRATOR_IP"
     
-    # Update .env file with current orchestrator IP
+    # Update or add MLflow URI to .env file
     if [ -f ".env" ]; then
-        # Remove old MLFLOW_TRACKING_URI line and add new one
-        grep -v "MLFLOW_TRACKING_URI=" .env > .env.tmp || true
+        # Remove any existing MLFLOW_TRACKING_URI and add the current one
+        grep -v "^MLFLOW_TRACKING_URI=" .env > .env.tmp || cp .env .env.tmp
         echo "MLFLOW_TRACKING_URI=http://\$ORCHESTRATOR_IP:5000" >> .env.tmp
         mv .env.tmp .env
         echo "✅ Updated MLflow URI to: http://\$ORCHESTRATOR_IP:5000"
@@ -264,7 +264,12 @@ if [ -n "\$ORCHESTRATOR_IP" ]; then
         echo "✅ Created .env with MLflow URI: http://\$ORCHESTRATOR_IP:5000"
     fi
 else
-    echo "⚠️ Could not get orchestrator IP, using MLflow URI from downloaded .env"
+    echo "⚠️ Could not get orchestrator IP"
+    if [ ! -f ".env" ]; then
+        echo "❌ No .env file and no orchestrator IP - cannot proceed"
+        gcloud compute instances add-metadata \$(hostname) --metadata job-status=failed --zone=$ZONE
+        exit 1
+    fi
 fi
 
 # Activate virtual environment and run the ML script
@@ -273,7 +278,7 @@ echo "🚀 Activating virtual environment and running ML script: $script_name"
 # Source the virtual environment and run the script
 source .venv/bin/activate
 
-# Load environment variables after activating venv (now with updated MLflow URI)
+# Load environment variables after activating venv
 set -a
 [ -f ./.env ] && source ./.env
 set +a
@@ -281,6 +286,13 @@ set +a
 echo "🐍 Using Python: \$(which python)"
 echo "🐍 Python version: \$(python --version)"
 echo "📡 MLflow URI: \$MLFLOW_TRACKING_URI"
+
+# Verify we have MLflow URI
+if [ -z "\$MLFLOW_TRACKING_URI" ]; then
+    echo "❌ MLFLOW_TRACKING_URI not set"
+    gcloud compute instances add-metadata \$(hostname) --metadata job-status=failed --zone=$ZONE
+    exit 1
+fi
 
 # Data files will be downloaded by the ML script itself when needed
 echo "💡 Data files will be downloaded by ML script when required"

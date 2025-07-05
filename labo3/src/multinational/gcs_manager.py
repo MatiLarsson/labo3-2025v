@@ -1,3 +1,4 @@
+# gcs_manager.py
 from google.cloud import storage
 from google.oauth2 import service_account
 from google.api_core import retry
@@ -74,39 +75,39 @@ class GCSManager:
         Download a file from GCS as text.
         
         Args:
-            bucket_name (str): Name of the GCS bucket
-            blob_path (str): Path to the file in the bucket
+            filename (str): Name of the file to download
             
         Returns:
             str: File content as text
         """
+        file_path = f"{self.gcp['blob_path']}/{filename}"  # Define file_path early
         try:
             client = self._get_gcs_client()
             bucket = client.bucket(self.gcp["bucket_name"])
-            file_path = f"{self.gcp['blob_path']}/{filename}"
             blob = bucket.blob(file_path)
             return blob.download_as_text()
         except Exception as e:
-            logger.error(f"Failed to download {file_path} from {self.gcp['bucket_name']}: {e}")
+            logger.error(f"Failed to download {filename} from {self.gcp['bucket_name']}: {e}")
             raise
 
     def download_file_as_bytes(self, filename):
         """
         Download a file from GCS as bytes.
+        
         Args:
-            bucket_name (str): Name of the GCS bucket
-            blob_path (str): Path to the file in the bucket
+            filename (str): Name of the file to download
+            
         Returns:
             bytes: File content as bytes
         """
+        file_path = f"{self.gcp['blob_path']}/{filename}"  # Define file_path early
         try:
             client = self._get_gcs_client()
             bucket = client.bucket(self.gcp["bucket_name"])
-            file_path = f"{self.gcp['blob_path']}/{filename}"
             blob = bucket.blob(file_path)
             return blob.download_as_bytes()
         except Exception as e:
-            logger.error(f"Failed to download {file_path} from {self.gcp['bucket_name']}: {e}")
+            logger.error(f"Failed to download {filename} from {self.gcp['bucket_name']}: {e}")
             raise
 
     def upload_file_from_memory(self, filename, data, content_type='application/octet-stream'):
@@ -119,10 +120,10 @@ class GCSManager:
             data (bytes or io.BytesIO): Data to upload
             content_type (str): MIME type of the content
         """
+        file_path = f"{self.gcp['blob_path']}/{filename}"  # Define file_path early
         try:
             client = self._get_gcs_client()
             bucket = client.bucket(self.gcp["bucket_name"])
-            file_path = f"{self.gcp['blob_path']}/{filename}"
             blob = bucket.blob(file_path)
             
             # Configure for large files
@@ -160,7 +161,7 @@ class GCSManager:
             str: MLflow server URI
         """
         try:
-            mlflow_server_uri = os.get_env('MLFLOW_TRACKING_URI', None)
+            mlflow_server_uri = os.getenv('MLFLOW_TRACKING_URI', None)
         
             return mlflow_server_uri
         except Exception as e:
@@ -208,6 +209,8 @@ class GCSManager:
             str: Experiment ID
         """
         try:    
+            import mlflow
+            
             # Set tracking URI to your MLflow server
             mlflow.set_tracking_uri(tracking_uri)
             
