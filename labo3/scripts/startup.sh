@@ -1,8 +1,7 @@
 #!/bin/bash
-# startup-script.sh - Final orchestrator VM startup script with simplified worker lifecycle
+# startup-script.sh - Professional orchestrator VM startup script with robust error handling
 
-set -e
-exec > >(tee -a /var/log/orchestrator.log) 2>&1
+set -euo pipefail  # Strict mode but we'll handle errors explicitly
 
 echo "$(date): 🚀 Orchestrator VM startup..."
 
@@ -31,14 +30,28 @@ echo "$(date): 📦 Using bucket: $BUCKET_NAME"
 # Create the main orchestrator script that will run in tmux
 cat > /opt/orchestrator/main_orchestrator.sh << 'EOF'
 #!/bin/bash
-# Main orchestrator script - runs continuously in tmux with abort support
+# Main orchestrator script - runs continuously in tmux with professional error handling
 
-set -e
+# Professional error handling - exit on unset variables and pipe failures, but handle errors explicitly
+set -uo pipefail
+
+# Custom error handler
+handle_error() {
+    local exit_code=$?
+    local line_number=$1
+    echo "❌ ERROR: Script failed at line $line_number with exit code $exit_code"
+    echo "📋 Current state: orchestration_active=$orchestration_active, current_job=$current_job, total_jobs=$total_jobs"
+    echo "💡 Continuing orchestration loop..."
+    # Don't exit - let the orchestration continue
+}
+
+# Set up error trap (but don't exit the script)
+trap 'handle_error $LINENO' ERR
 
 WORKSPACE="/opt/orchestrator"
 cd $WORKSPACE
 
-echo "🎯 Starting ML Orchestrator with simplified worker lifecycle..."
+echo "🎯 Starting ML Orchestrator with professional error handling..."
 
 # Get bucket name from VM metadata
 BUCKET_NAME=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/bucket-name" -H "Metadata-Flavor: Google" 2>/dev/null || echo "labo3_bucket")
@@ -47,8 +60,7 @@ BUCKET_NAME=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instan
 load_configuration() {
     echo "📋 Downloading configuration from gs://$BUCKET_NAME/config/project_config.yml"
     
-    # Download latest configuration using VM's default service account
-    if gsutil cp gs://$BUCKET_NAME/config/project_config.yml ./config.yml; then
+    if gsutil cp gs://$BUCKET_NAME/config/project_config.yml ./config.yml 2>/dev/null; then
         echo "✅ Configuration downloaded successfully"
     else
         echo "❌ Failed to download configuration from GCS"
@@ -56,22 +68,58 @@ load_configuration() {
         return 1
     fi
     
-    # Parse configuration
-    PROJECT_ID=$(yq '.gcp.project_id' ./config.yml)
-    ZONE=$(yq '.gcp.zone' ./config.yml)
-    CHECK_INTERVAL=$(yq '.orchestrator.check_interval' ./config.yml)
+    # Parse configuration with error handling
+    if ! PROJECT_ID=$(yq '.gcp.project_id' ./config.yml 2>/dev/null); then
+        echo "❌ Failed to parse project_id from config"
+        return 1
+    fi
     
-    # Set GCP project (VM should already be authenticated) - suppress confirmation prompts
-    gcloud config set project $PROJECT_ID --quiet
+    if ! ZONE=$(yq '.gcp.zone' ./config.yml 2>/dev/null); then
+        echo "❌ Failed to parse zone from config"
+        return 1
+    fi
+    
+    if ! CHECK_INTERVAL=$(yq '.orchestrator.check_interval' ./config.yml 2>/dev/null); then
+        echo "⚠️ Failed to parse check_interval, using default 60"
+        CHECK_INTERVAL=60
+    fi
+    
+    # Set GCP project
+    if gcloud config set project $PROJECT_ID --quiet 2>/dev/null; then
+        echo "✅ GCP project set successfully"
+    else
+        echo "❌ Failed to set GCP project"
+        return 1
+    fi
     
     echo "📋 Project: $PROJECT_ID, Zone: $ZONE, Check Interval: ${CHECK_INTERVAL}s"
     
     # Export variables for use in functions
     export PROJECT_ID ZONE CHECK_INTERVAL BUCKET_NAME
+    return 0
+}
+
+# Initial configuration load with retry
+load_config_with_retry() {
+    local max_attempts=3
+    local attempt=1
+    
+    while [ $attempt -le $max_attempts ]; do
+        echo "📋 Configuration load attempt $attempt/$max_attempts"
+        if load_configuration; then
+            return 0
+        fi
+        echo "⚠️ Configuration load failed, waiting 10 seconds before retry..."
+        sleep 10
+        ((attempt++))
+    done
+    
+    echo "❌ Failed to load configuration after $max_attempts attempts"
+    return 1
 }
 
 # Initial configuration load
-if ! load_configuration; then
+if ! load_config_with_retry; then
     echo "❌ Failed to load initial configuration, exiting..."
     exit 1
 fi
@@ -82,25 +130,30 @@ current_job=0
 total_jobs=0
 completed_jobs=()  # Track completed jobs persistently
 
-# Helper functions
+# Helper functions with error handling
 get_job_name() {
-    yq ".jobs[$1].name" ./config.yml
+    local job_index=$1
+    yq ".jobs[$job_index].name" ./config.yml 2>/dev/null || echo "unknown"
 }
 
 get_job_instance() {
-    yq ".jobs[$1].instance_name" ./config.yml
+    local job_index=$1
+    yq ".jobs[$job_index].instance_name" ./config.yml 2>/dev/null || echo "unknown"
 }
 
 get_job_script() {
-    yq ".jobs[$1].script" ./config.yml
+    local job_index=$1
+    yq ".jobs[$job_index].script" ./config.yml 2>/dev/null || echo "unknown"
 }
 
 get_job_machine_type() {
-    yq ".jobs[$1].machine_type" ./config.yml
+    local job_index=$1
+    yq ".jobs[$job_index].machine_type" ./config.yml 2>/dev/null || echo "n1-standard-4"
 }
 
 get_job_dependencies() {
-    yq ".jobs[$1].depends_on // \"\"" ./config.yml
+    local job_index=$1
+    yq ".jobs[$job_index].depends_on // \"\"" ./config.yml 2>/dev/null || echo ""
 }
 
 check_instance_status() {
@@ -108,15 +161,20 @@ check_instance_status() {
     gcloud compute instances describe $instance_name --zone=$ZONE --format="value(status)" 2>/dev/null || echo "NOT_FOUND"
 }
 
-# Simplified job completion check - orchestrator controls lifecycle
+# Robust job completion check
 check_job_completion() {
     local instance_name=$1
     
     # Get all metadata and parse it manually since the format query is unreliable
-    local all_metadata=$(gcloud compute instances describe $instance_name --zone=$ZONE --format="value(metadata.items)" 2>/dev/null || echo "")
+    local all_metadata
+    if ! all_metadata=$(gcloud compute instances describe $instance_name --zone=$ZONE --format="value(metadata.items)" 2>/dev/null); then
+        echo "running"
+        return
+    fi
     
     # Parse the job-status from the metadata string
-    local status=$(echo "$all_metadata" | grep -o "'key': 'job-status', 'value': '[^']*'" | grep -o "'value': '[^']*'" | cut -d"'" -f4)
+    local status
+    status=$(echo "$all_metadata" | grep -o "'key': 'job-status', 'value': '[^']*'" | grep -o "'value': '[^']*'" | cut -d"'" -f4 2>/dev/null || echo "")
     
     # Return the status or default to running
     echo "${status:-running}"
@@ -130,10 +188,15 @@ record_job_completion() {
     echo "✅ Completed jobs: ${completed_jobs[*]}"
 }
 
-# Improved dependency checking with persistent state
+# Dependency checking with robust error handling
 check_dependencies_completed() {
     local job_index=$1
-    local dependencies=$(get_job_dependencies $job_index)
+    local dependencies
+    
+    if ! dependencies=$(get_job_dependencies $job_index); then
+        echo "⚠️ Could not get dependencies for job $job_index, assuming no dependencies"
+        return 0
+    fi
     
     if [ -z "$dependencies" ] || [ "$dependencies" = "null" ]; then
         return 0  # No dependencies
@@ -170,7 +233,7 @@ create_worker_startup_script() {
     
     cat > /tmp/worker-startup.sh << WORKER_EOF
 #!/bin/bash
-set -e
+set -euo pipefail
 exec > >(tee -a /var/log/worker.log) 2>&1
 
 echo "\$(date): 🔧 Starting ML Worker..."
@@ -370,10 +433,10 @@ fi
 
 # Worker stays alive - let orchestrator handle shutdown
 echo "💤 Job complete. Worker waiting for orchestrator to terminate instance..."
-# Get status using the same parsing method as orchestrator
+# Get status using robust parsing method
 WORKER_METADATA=\$(gcloud compute instances describe \$(hostname) --zone=$ZONE --format="value(metadata.items)" 2>/dev/null || echo "")
-WORKER_STATUS=\$(echo "\$WORKER_METADATA" | grep -o "'key': 'job-status', 'value': '[^']*'" | grep -o "'value': '[^']*'" | cut -d"'" -f4)
-echo "📋 Status: \${WORKER_STATUS:-unknown}"
+WORKER_STATUS=\$(echo "\$WORKER_METADATA" | grep -o "'key': 'job-status', 'value': '[^']*'" | grep -o "'value': '[^']*'" | cut -d"'" -f4 2>/dev/null || echo "unknown")
+echo "📋 Status: \${WORKER_STATUS}"
 
 # Keep the worker alive - orchestrator will terminate when ready
 while true; do
@@ -383,19 +446,43 @@ done
 WORKER_EOF
 }
 
+# Robust worker instance creation with comprehensive error handling
 create_worker_instance() {
     local job_index=$1
-    local instance_name=$(get_job_instance $job_index)
-    local script_name=$(get_job_script $job_index)
-    local machine_type=$(get_job_machine_type $job_index)
+    local instance_name job_name script_name machine_type
     
-    echo "🚀 Creating worker instance: $instance_name"
+    # Get job details with error handling
+    if ! instance_name=$(get_job_instance $job_index); then
+        echo "❌ Failed to get instance name for job $job_index"
+        return 1
+    fi
+    
+    if ! job_name=$(get_job_name $job_index); then
+        echo "❌ Failed to get job name for job $job_index"
+        return 1
+    fi
+    
+    if ! script_name=$(get_job_script $job_index); then
+        echo "❌ Failed to get script name for job $job_index"
+        return 1
+    fi
+    
+    if ! machine_type=$(get_job_machine_type $job_index); then
+        echo "❌ Failed to get machine type for job $job_index"
+        return 1
+    fi
+    
+    echo "🚀 Creating worker instance: $instance_name (job: $job_name, script: $script_name, type: $machine_type)"
     
     # Create worker startup script
-    create_worker_startup_script $script_name $instance_name
+    if ! create_worker_startup_script $script_name $instance_name; then
+        echo "❌ Failed to create worker startup script"
+        return 1
+    fi
     
-    # Create the instance with the same service account as orchestrator
-    if gcloud compute instances create $instance_name \
+    # Create the instance with comprehensive error handling
+    local create_output
+    if create_output=$(gcloud compute instances create $instance_name \
         --zone=$ZONE \
         --machine-type=$machine_type \
         --image-family=ubuntu-2204-lts \
@@ -403,37 +490,56 @@ create_worker_instance() {
         --scopes=https://www.googleapis.com/auth/cloud-platform \
         --preemptible \
         --metadata-from-file startup-script=/tmp/worker-startup.sh \
-        --quiet; then
+        --quiet 2>&1); then
         
         echo "✅ Instance $instance_name created successfully"
         return 0
     else
         echo "❌ Failed to create instance $instance_name"
+        echo "📋 Error details: $create_output"
+        
+        # Check if it's a quota issue
+        if echo "$create_output" | grep -q -i "quota\|exceeded\|limit"; then
+            echo "💡 This appears to be a quota limitation"
+        elif echo "$create_output" | grep -q -i "permission\|denied\|unauthorized"; then
+            echo "💡 This appears to be a permission issue"
+        elif echo "$create_output" | grep -q -i "zone\|region"; then
+            echo "💡 This appears to be a zone/region availability issue"
+        fi
+        
         return 1
     fi
 }
 
+# Safe instance deletion with error handling
 delete_instance() {
     local instance_name=$1
-    echo "🗑️  Deleting instance: $instance_name"
-    gcloud compute instances delete $instance_name --zone=$ZONE --quiet 2>/dev/null || true
+    echo "🗑️ Deleting instance: $instance_name"
+    
+    if gcloud compute instances delete $instance_name --zone=$ZONE --quiet 2>/dev/null; then
+        echo "✅ Instance $instance_name deleted successfully"
+    else
+        echo "⚠️ Failed to delete instance $instance_name (may already be deleted)"
+    fi
 }
 
 # Check for abort signal
 check_abort_signal() {
-    # Check metadata for abort trigger
-    local abort_trigger=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/abort-trigger" -H "Metadata-Flavor: Google" 2>/dev/null || echo "")
+    local abort_trigger
+    if ! abort_trigger=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/abort-trigger" -H "Metadata-Flavor: Google" 2>/dev/null); then
+        return 1
+    fi
     
     # Only proceed if we got a non-empty response that looks like a real trigger
     if [ -n "$abort_trigger" ] && [ "$abort_trigger" != "null" ] && [[ "$abort_trigger" != *"<!DOCTYPE"* ]] && [[ "$abort_trigger" != *"<html"* ]]; then
         echo "🛑 ABORT SIGNAL DETECTED: $abort_trigger"
         
         # Clear the abort trigger metadata
-        INSTANCE_NAME=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/name" -H "Metadata-Flavor: Google")
-        gcloud compute instances remove-metadata $INSTANCE_NAME --keys=abort-trigger --zone=$ZONE --quiet
-        
-        # Also clear any pending deploy trigger
-        gcloud compute instances remove-metadata $INSTANCE_NAME --keys=deploy-trigger --zone=$ZONE --quiet
+        local instance_name
+        if instance_name=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/name" -H "Metadata-Flavor: Google" 2>/dev/null); then
+            gcloud compute instances remove-metadata $instance_name --keys=abort-trigger --zone=$ZONE --quiet 2>/dev/null || true
+            gcloud compute instances remove-metadata $instance_name --keys=deploy-trigger --zone=$ZONE --quiet 2>/dev/null || true
+        fi
         
         return 0
     fi
@@ -448,13 +554,15 @@ abort_orchestration() {
     if [ "$orchestration_active" = true ]; then
         echo "🧹 Cleaning up all running job instances..."
         for i in $(seq 0 $((total_jobs-1))); do
-            instance_name=$(get_job_instance $i)
-            echo "🗑️ Terminating instance: $instance_name"
-            delete_instance $instance_name
+            local instance_name
+            if instance_name=$(get_job_instance $i); then
+                echo "🗑️ Terminating instance: $instance_name"
+                delete_instance $instance_name
+            fi
         done
         
         # Signal abort completion
-        echo "$(date -Iseconds): Orchestration aborted by user" | gsutil cp - gs://$BUCKET_NAME/status/orchestration-aborted.txt
+        echo "$(date -Iseconds): Orchestration aborted by user" | gsutil cp - gs://$BUCKET_NAME/status/orchestration-aborted.txt 2>/dev/null || true
         
         echo "✅ All instances terminated"
     else
@@ -471,8 +579,10 @@ abort_orchestration() {
 }
 
 check_deployment_signal() {
-    # Check metadata for deployment trigger
-    local deploy_trigger=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/deploy-trigger" -H "Metadata-Flavor: Google" 2>/dev/null || echo "")
+    local deploy_trigger
+    if ! deploy_trigger=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/deploy-trigger" -H "Metadata-Flavor: Google" 2>/dev/null); then
+        return 1
+    fi
     
     # Only proceed if we got a non-empty response that looks like a real trigger (not HTML error)
     if [ -n "$deploy_trigger" ] && [ "$deploy_trigger" != "null" ] && [[ "$deploy_trigger" != *"<!DOCTYPE"* ]] && [[ "$deploy_trigger" != *"<html"* ]]; then
@@ -487,8 +597,10 @@ check_deployment_signal() {
         fi
         
         # Clear the deployment trigger metadata
-        INSTANCE_NAME=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/name" -H "Metadata-Flavor: Google")
-        gcloud compute instances remove-metadata $INSTANCE_NAME --keys=deploy-trigger --zone=$ZONE --quiet
+        local instance_name
+        if instance_name=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/name" -H "Metadata-Flavor: Google" 2>/dev/null); then
+            gcloud compute instances remove-metadata $instance_name --keys=deploy-trigger --zone=$ZONE --quiet 2>/dev/null || true
+        fi
         
         echo "🔄 Starting new orchestration cycle..."
         return 0
@@ -501,20 +613,29 @@ start_orchestration() {
     echo "🚀 Starting new orchestration cycle..."
     orchestration_active=true
     current_job=0
-    total_jobs=$(yq '.jobs | length' ./config.yml)
     completed_jobs=()  # Reset completed jobs tracking
+    
+    # Get total jobs with error handling
+    if ! total_jobs=$(yq '.jobs | length' ./config.yml 2>/dev/null); then
+        echo "❌ Failed to get total jobs count, assuming 0"
+        total_jobs=0
+        orchestration_active=false
+        return 1
+    fi
     
     # Clean up any existing job instances
     echo "🧹 Cleaning up existing job instances..."
     for i in $(seq 0 $((total_jobs-1))); do
-        instance_name=$(get_job_instance $i)
-        delete_instance $instance_name
+        local instance_name
+        if instance_name=$(get_job_instance $i); then
+            delete_instance $instance_name
+        fi
     done
     
     echo "📊 Starting orchestration with $total_jobs jobs"
 }
 
-# Main orchestration loop - this runs forever and actively manages workflow
+# Main orchestration loop with comprehensive error handling
 echo "⏰ Starting orchestration monitor (checking every $CHECK_INTERVAL seconds)..."
 
 while true; do
@@ -536,8 +657,20 @@ while true; do
     # Run job orchestration if active
     if [ "$orchestration_active" = true ]; then
         if [ $current_job -lt $total_jobs ]; then
-            job_name=$(get_job_name $current_job)
-            instance_name=$(get_job_instance $current_job)
+            local job_name instance_name
+            
+            # Get job details with error handling
+            if ! job_name=$(get_job_name $current_job); then
+                echo "❌ Failed to get job name for job $current_job, skipping"
+                ((current_job++))
+                continue
+            fi
+            
+            if ! instance_name=$(get_job_instance $current_job); then
+                echo "❌ Failed to get instance name for job $current_job, skipping"
+                ((current_job++))
+                continue
+            fi
             
             echo "🔍 Checking job: $job_name (instance: $instance_name) [$((current_job + 1))/$total_jobs]"
             
@@ -546,20 +679,24 @@ while true; do
                 echo "⏳ Dependencies not met for job $job_name, waiting..."
             else
                 # Dependencies met, check instance status
+                local status
                 status=$(check_instance_status $instance_name)
                 
                 case $status in
                     "NOT_FOUND")
                         echo "📋 Instance not found, creating spot VM for $job_name..."
+                        # Use explicit error handling instead of relying on set -e
                         if create_worker_instance $current_job; then
                             echo "✅ Spot VM $instance_name created for $job_name"
                         else
                             echo "❌ Failed to create spot VM, will retry in next cycle"
+                            echo "💡 This is normal for quota/permission issues - orchestrator will keep trying"
                         fi
                         ;;
                         
                     "RUNNING")
                         echo "🟢 Instance $instance_name running, checking completion..."
+                        local completion
                         completion=$(check_job_completion $instance_name)
                         case $completion in
                             "completed")
@@ -576,8 +713,10 @@ while true; do
                                 
                                 # If there's a next job, immediately trigger it
                                 if [ $current_job -lt $total_jobs ]; then
-                                    next_job_name=$(get_job_name $current_job)
-                                    echo "🚀 Ready to start next job: $next_job_name"
+                                    local next_job_name
+                                    if next_job_name=$(get_job_name $current_job); then
+                                        echo "🚀 Ready to start next job: $next_job_name"
+                                    fi
                                 fi
                                 ;;
                             "failed")
@@ -611,13 +750,15 @@ while true; do
             # Final cleanup
             echo "🧹 Final cleanup of any remaining instances..."
             for i in $(seq 0 $((total_jobs-1))); do
-                instance_name=$(get_job_instance $i)
-                delete_instance $instance_name
+                local instance_name
+                if instance_name=$(get_job_instance $i); then
+                    delete_instance $instance_name
+                fi
             done
             
             # Signal completion
             echo "📝 Signaling orchestration completion..."
-            echo "$(date -Iseconds): All jobs completed successfully" | gsutil cp - gs://$BUCKET_NAME/status/orchestration-complete.txt
+            echo "$(date -Iseconds): All jobs completed successfully" | gsutil cp - gs://$BUCKET_NAME/status/orchestration-complete.txt 2>/dev/null || true
             
             echo "✅ Workflow orchestration cycle finished! Waiting for new deployments..."
             orchestration_active=false
