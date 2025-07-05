@@ -1,5 +1,5 @@
 #!/bin/bash
-# startup-script.sh - Simple orchestrator VM startup script with abort support
+# startup-script.sh - Final orchestrator VM startup script with simplified worker lifecycle
 
 set -e
 exec > >(tee -a /var/log/orchestrator.log) 2>&1
@@ -38,7 +38,7 @@ set -e
 WORKSPACE="/opt/orchestrator"
 cd $WORKSPACE
 
-echo "🎯 Starting ML Orchestrator with abort support..."
+echo "🎯 Starting ML Orchestrator with simplified worker lifecycle..."
 
 # Get bucket name from VM metadata
 BUCKET_NAME=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/bucket-name" -H "Metadata-Flavor: Google" 2>/dev/null || echo "labo3_bucket")
@@ -108,10 +108,15 @@ check_instance_status() {
     gcloud compute instances describe $instance_name --zone=$ZONE --format="value(status)" 2>/dev/null || echo "NOT_FOUND"
 }
 
+# Simplified job completion check - orchestrator controls lifecycle
 check_job_completion() {
     local instance_name=$1
+    
+    # Simple metadata check - instance should be running
     local status=$(gcloud compute instances describe $instance_name --zone=$ZONE \
         --format="value(metadata.items[key=job-status].value)" 2>/dev/null || echo "")
+    
+    # Return the status directly (completed, failed, or empty/running)
     echo "${status:-running}"
 }
 
@@ -146,26 +151,6 @@ check_dependencies_completed() {
                 break
             fi
         done
-        
-        # If not in completed array, check if it's currently running and completed
-        if [ "$dep_completed" = false ]; then
-            for i in $(seq 0 $((total_jobs-1))); do
-                if [ "$(get_job_name $i)" = "$dep" ]; then
-                    local dep_instance=$(get_job_instance $i)
-                    local instance_status=$(check_instance_status $dep_instance)
-                    
-                    # Only check job completion if instance exists
-                    if [ "$instance_status" != "NOT_FOUND" ]; then
-                        local completion_status=$(check_job_completion $dep_instance)
-                        if [ "$completion_status" = "completed" ]; then
-                            dep_completed=true
-                            echo "✅ Dependency $dep completed (live check)"
-                            break
-                        fi
-                    fi
-                fi
-            done
-        fi
         
         if [ "$dep_completed" = false ]; then
             echo "⏳ Dependency $dep not yet completed"
@@ -368,7 +353,7 @@ find . -maxdepth 2 \( -name "*.pkl" -o -name "*.joblib" -o -name "*.csv" -o -nam
     fi
 done
 
-# Signal completion status
+# Signal completion status and wait for orchestrator to terminate
 if [ \$SCRIPT_EXIT_CODE -eq 0 ]; then
     echo "✅ Job completed successfully at \$(date)" | \\
         gsutil cp - gs://$BUCKET_NAME/status/\${EXPERIMENT_NAME}_\${DEPLOY_ID}_${instance_name}_success.txt
@@ -381,9 +366,15 @@ else
     echo "💥 Worker failed!"
 fi
 
-# Shutdown
-echo "🛑 Shutting down instance..."
-shutdown -h now
+# Worker stays alive - let orchestrator handle shutdown
+echo "💤 Job complete. Worker waiting for orchestrator to terminate instance..."
+echo "📋 Status: \$(gcloud compute instances describe \$(hostname) --zone=$ZONE --format='value(metadata.items[key=job-status].value)' 2>/dev/null || echo 'unknown')"
+
+# Keep the worker alive - orchestrator will terminate when ready
+while true; do
+    sleep 60
+    echo "💤 Worker still alive, waiting for orchestrator..."
+done
 WORKER_EOF
 }
 
@@ -569,10 +560,11 @@ while true; do
                             "completed")
                                 echo "✅ Job $job_name completed successfully"
                                 
-                                # Record completion BEFORE deleting instance
+                                # Record completion
                                 record_job_completion "$job_name"
                                 
-                                echo "🗑️ Cleaning up completed instance..."
+                                # Orchestrator terminates the worker
+                                echo "🛑 Orchestrator terminating completed worker..."
                                 delete_instance $instance_name
                                 ((current_job++))
                                 echo "📈 Moving to next job ($current_job/$total_jobs)"
@@ -584,7 +576,10 @@ while true; do
                                 fi
                                 ;;
                             "failed")
-                                echo "❌ Job $job_name failed! Recreating spot VM..."
+                                echo "❌ Job $job_name failed!"
+                                
+                                # Orchestrator terminates the failed worker
+                                echo "🛑 Orchestrator terminating failed worker..."
                                 delete_instance $instance_name
                                 echo "⏰ Waiting 60 seconds before recreating failed job..."
                                 sleep 60
@@ -593,31 +588,6 @@ while true; do
                                 echo "🔄 Job $job_name still running on $instance_name..."
                                 ;;
                         esac
-                        ;;
-                        
-                    "TERMINATED"|"STOPPING"|"STOPPED")
-                        echo "🔍 Instance $instance_name stopped, checking if job completed first..."
-                        completion=$(check_job_completion $instance_name)
-                        if [ "$completion" = "completed" ]; then
-                            echo "✅ Job $job_name completed successfully before shutdown"
-                            
-                            # Record completion BEFORE deleting instance
-                            record_job_completion "$job_name"
-                            
-                            delete_instance $instance_name
-                            ((current_job++))
-                            echo "📈 Moving to next job ($current_job/$total_jobs)"
-                        elif [ "$completion" = "failed" ]; then
-                            echo "❌ Job $job_name failed before shutdown"
-                            delete_instance $instance_name
-                            echo "⏰ Waiting 60 seconds before recreating failed job..."
-                            sleep 60
-                        else
-                            echo "🔄 Job $job_name incomplete - instance stopped unexpectedly, recreating..."
-                            delete_instance $instance_name
-                            echo "⏰ Waiting 30 seconds before recreating stopped instance..."
-                            sleep 30
-                        fi
                         ;;
                         
                     "PROVISIONING"|"STAGING")

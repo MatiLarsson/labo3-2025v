@@ -155,7 +155,6 @@ class LightGBMModel:
         logger.info("✅ Cherry-flagging completed successfully.")
         logger.info(f"Found {cherry_flagged_count} rows flagged as cherry, out of {len(self.df)} total rows.")
 
-
     def _flag_problematic_standardization(self):
         """Flag rows with problematic standardization."""
         logger.info("🚩 Flagging problematic standardization rows...")
@@ -814,6 +813,28 @@ class LightGBMModel:
             # Get the model compliant rows
             kaggle_model_compliant = kaggle_to_predict.filter(
                 (pl.col('cherry_flag') == 1) & (pl.col('invalid_standardization_flag') == 0)
+            )
+
+            # Log to mlflow the proportion of compliant rows out of total rows
+            compliant_count = len(kaggle_model_compliant)
+            total_count = len(kaggle_to_predict)
+            non_compliant_count = total_count - compliant_count
+            mlflow.log_metric("kaggle_compliant_proportion_of_rows", compliant_count / total_count if total_count > 0 else 0.0)
+            mlflow.log_metric("kaggle_non_compliant_proportion_of_rows", non_compliant_count / total_count if total_count > 0 else 0.0)
+
+            # Log to mlflow the proportion of compliant quantity_tn_rolling_mean_11m out of total quantity_tn_rolling_mean_11m
+            compliant_quantity_tn_rolling_mean_11m_sum = kaggle_model_compliant.select(
+                pl.col('quantity_tn_rolling_mean_11m').sum()
+            ).item()
+            total_quantity_tn_rolling_mean_11m_sum = kaggle_to_predict.select(
+                pl.col('quantity_tn_rolling_mean_11m').sum()
+            ).item()
+            non_compliant_quantity_tn_rolling_mean_11m_sum = total_quantity_tn_rolling_mean_11m_sum - compliant_quantity_tn_rolling_mean_11m_sum
+            mlflow.log_metric("kaggle_compliant_quantity_tn_rolling_mean_11m_proportion",
+                compliant_quantity_tn_rolling_mean_11m_sum / total_quantity_tn_rolling_mean_11m_sum if total_quantity_tn_rolling_mean_11m_sum > 0 else 0.0
+            )
+            mlflow.log_metric("kaggle_non_compliant_quantity_tn_rolling_mean_11m_proportion",
+                non_compliant_quantity_tn_rolling_mean_11m_sum / total_quantity_tn_rolling_mean_11m_sum if total_quantity_tn_rolling_mean_11m_sum > 0 else 0.0
             )
 
             # Prepare predictions for model compliant rows
