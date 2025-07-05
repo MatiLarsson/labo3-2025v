@@ -24,13 +24,13 @@ jobs:
   - name: "dataset"
     script: "run_dataset.py"
     instance_name: "dataset-worker"
-    machine_type: "e2-standard-2" #"c3d-highmem-16"    # 16 CPU, 128GB RAM (safe choice)
+    machine_type: "c3d-highmem-16" #"c3d-highmem-16" -> 16 CPU, 128GB RAM (safe choice) | "e2-standard-2" -> Testing, 2 CPU, 8GB RAM
     preemptible: true
     
   - name: "model"
     script: "run_model.py" 
     instance_name: "model-worker"
-    machine_type: "e2-standard-2" #"c3d-highmem-30"    # 30 CPU, 240GB RAM (max available)
+    machine_type: "c3d-highmem-30" #"c3d-highmem-30" -> 30 CPU, 240GB RAM (max available) | "e2-standard-2" -> Testing, 2 CPU, 8GB RAM
     preemptible: true
     depends_on: "dataset"
 

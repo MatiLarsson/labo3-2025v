@@ -4,6 +4,9 @@
 
 set -e
 
+# Suppress urllib3 warnings
+export PYTHONWARNINGS="ignore:urllib3"
+
 # Find git repository root first
 echo "🔍 Detecting git repository..."
 GIT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
@@ -12,7 +15,6 @@ if [ -z "$GIT_ROOT" ]; then
     exit 1
 fi
 
-echo "📁 Git repository root: $GIT_ROOT"
 ORIGINAL_DIR=$(pwd)
 
 # Load configuration
@@ -22,30 +24,23 @@ CONFIG_FILE="project_config.yml"
 if [ ! -f "$CONFIG_FILE" ]; then
     if [ -f "$GIT_ROOT/$CONFIG_FILE" ]; then
         CONFIG_FILE="$GIT_ROOT/$CONFIG_FILE"
-        echo "📋 Using config from git root: $CONFIG_FILE"
     elif [ -f "$GIT_ROOT/labo3/$CONFIG_FILE" ]; then
         CONFIG_FILE="$GIT_ROOT/labo3/$CONFIG_FILE"
-        echo "📋 Using config from labo3 subdirectory: $CONFIG_FILE"
     elif [ -f "labo3/$CONFIG_FILE" ]; then
         CONFIG_FILE="labo3/$CONFIG_FILE"
-        echo "📋 Using config from labo3 subdirectory: $CONFIG_FILE"
     else
-        echo "❌ project_config.yml not found in any expected location!"
-        echo "   Current: $(pwd)/$CONFIG_FILE"
-        echo "   Git root: $GIT_ROOT/$CONFIG_FILE"
-        echo "   Labo3: $GIT_ROOT/labo3/$CONFIG_FILE"
+        echo "❌ project_config.yml not found!"
         exit 1
     fi
 fi
 
 # Parse YAML config (requires yq)
 if ! command -v yq &> /dev/null; then
-    echo "Installing yq..."
+    echo "📦 Installing yq..."
     if command -v brew &> /dev/null; then
-        brew install yq
+        brew install yq > /dev/null 2>&1
     else
-        # Fallback for Linux systems without brew
-        sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+        sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 2>/dev/null
         sudo chmod +x /usr/local/bin/yq
     fi
 fi
@@ -55,68 +50,47 @@ BUCKET_NAME=$(yq '.gcp.bucket_name' $CONFIG_FILE)
 ORCHESTRATOR_VM=$(yq '.orchestrator.vm_name' $CONFIG_FILE)
 ZONE=$(yq '.gcp.zone' $CONFIG_FILE)
 
-echo "🚀 Starting deployment for project: $(yq '.project.name' $CONFIG_FILE)"
+echo "🚀 Deploying $(yq '.project.name' $CONFIG_FILE) to $PROJECT_ID"
 
-# 1. Git operations - Commit and push latest changes
-echo "📝 Committing and pushing latest changes..."
-
-# Change to git root for git operations
+# 1. Git operations
+echo "📝 Pushing latest changes..."
 cd "$GIT_ROOT"
 
-# Check for uncommitted changes
-if ! git diff-index --quiet HEAD --; then
-    echo "📝 Found uncommitted changes, committing..."
-    git add .
-    git commit -m "Deploy: $(date '+%Y-%m-%d %H:%M:%S') - Experiment deployment" || echo "No changes to commit"
-else
-    echo "✅ No uncommitted changes found"
+if ! git diff-index --quiet HEAD -- 2>/dev/null; then
+    git add . > /dev/null 2>&1
+    git commit -m "Deploy: $(date '+%Y-%m-%d %H:%M:%S')" > /dev/null 2>&1 || true
 fi
 
-# Push to remote
-echo "🔄 Pushing to remote repository..."
-git push origin main || git push origin master || {
+git push origin main > /dev/null 2>&1 || git push origin master > /dev/null 2>&1 || {
     echo "❌ Failed to push to remote repository"
-    echo "Please check your git remote configuration and try again"
     exit 1
 }
 
-echo "✅ Code pushed to remote repository"
-
-# Return to original directory for the rest of the script
 cd "$ORIGINAL_DIR"
 
-# 2. Authenticate with service account
+# 2. Authenticate with GCP
 echo "🔑 Authenticating with GCP..."
 
-# Check for service account in current directory or git root
 SERVICE_ACCOUNT_FILE="service-account.json"
 if [ ! -f "$SERVICE_ACCOUNT_FILE" ]; then
     if [ -f "$GIT_ROOT/$SERVICE_ACCOUNT_FILE" ]; then
         SERVICE_ACCOUNT_FILE="$GIT_ROOT/$SERVICE_ACCOUNT_FILE"
-        echo "🔑 Using service account from git root: $SERVICE_ACCOUNT_FILE"
     else
-        echo "❌ service-account.json not found in current directory or git root!"
-        echo "   Current: $(pwd)/$SERVICE_ACCOUNT_FILE"
-        echo "   Git root: $GIT_ROOT/$SERVICE_ACCOUNT_FILE"
+        echo "❌ service-account.json not found!"
         exit 1
     fi
 fi
 
-gcloud auth activate-service-account --key-file="$SERVICE_ACCOUNT_FILE" --quiet
-gcloud config set project $PROJECT_ID --quiet
+gcloud auth activate-service-account --key-file="$SERVICE_ACCOUNT_FILE" --quiet 2>/dev/null
+gcloud config set project $PROJECT_ID --quiet 2>/dev/null
 
-# 3. Build package (skip this - we'll install directly on workers)
-echo "📦 Skipping package build - workers will install from source"
+# 3. Upload configuration
+echo "☁️ Uploading configuration..."
+gsutil -q cp "$CONFIG_FILE" gs://$BUCKET_NAME/config/ 2>/dev/null
 
-# 4. Upload artifacts to GCS
-echo "☁️ Uploading configuration to GCS..."
+# 4. Process and upload .env file
+echo "📄 Processing environment file..."
 
-# Only upload config file - no more wheel files
-gsutil cp "$CONFIG_FILE" gs://$BUCKET_NAME/config/
-
-echo "💡 Note: Workers will install package from source using uv"
-
-# Upload .env file with updated MLflow URI and cleaned for GCP environment
 ENV_FILE=""
 if [ -f ".env" ]; then
     ENV_FILE=".env"
@@ -129,94 +103,44 @@ elif [ -f "labo3/.env" ]; then
 fi
 
 if [ -n "$ENV_FILE" ]; then
-    echo "📄 Processing .env file for GCP deployment..."
-    
     # Get current orchestrator VM IP
     ORCHESTRATOR_IP=$(gcloud compute instances describe $ORCHESTRATOR_VM --zone=$ZONE --format="value(networkInterfaces[0].accessConfigs[0].natIP)" 2>/dev/null || echo "")
     
     if [ -n "$ORCHESTRATOR_IP" ]; then
-        echo "📡 Current orchestrator IP: $ORCHESTRATOR_IP"
-        
-        # Create a cleaned .env file for GCP deployment
-        echo "🧹 Creating clean .env file for GCP environment..."
-        
-        # Start with a clean file containing only MLflow URI
+        # Create clean .env file for GCP
         cat > .env.gcp << GCP_ENV_EOF
-# MLflow tracking server (dynamically set by deploy.sh)
+# MLflow tracking server (set by deploy.sh)
 MLFLOW_TRACKING_URI=http://$ORCHESTRATOR_IP:5000
 
-# GCP Environment Configuration
-# Workers use VM default service account - no GOOGLE_APPLICATION_CREDENTIALS needed
-
 GCP_ENV_EOF
-        
-        # Add any other non-credential environment variables from the original .env
-        # (excluding MLFLOW_TRACKING_URI and GOOGLE_APPLICATION_CREDENTIALS)
-        if [ -f "$ENV_FILE" ]; then
-            echo "📋 Adding other environment variables (excluding credentials)..."
-            grep -v "^MLFLOW_TRACKING_URI=" "$ENV_FILE" | \
-            grep -v "^GOOGLE_APPLICATION_CREDENTIALS=" | \
-            grep -v "^#" | \
-            grep -v "^$" >> .env.gcp || true
-        fi
-        
-        echo "📄 Uploading cleaned .env file..."
-        gsutil cp .env.gcp gs://$BUCKET_NAME/config/.env
-        
-        # Clean up temporary file
-        rm -f .env.gcp
-        
-        echo "✅ Clean .env uploaded with MLflow URI: http://$ORCHESTRATOR_IP:5000"
-        echo "✅ GOOGLE_APPLICATION_CREDENTIALS removed (workers use VM default credentials)"
-    else
-        echo "⚠️ Could not get orchestrator IP, creating minimal .env"
-        
-        # Create minimal .env without orchestrator IP (worker will determine it)
-        cat > .env.gcp << MINIMAL_ENV_EOF
-# MLflow tracking server (will be set by worker)
-# MLFLOW_TRACKING_URI will be determined by worker
-
-# GCP Environment Configuration
-# Workers use VM default service account - no GOOGLE_APPLICATION_CREDENTIALS needed
-
-MINIMAL_ENV_EOF
         
         # Add other non-credential variables
         if [ -f "$ENV_FILE" ]; then
             grep -v "^MLFLOW_TRACKING_URI=" "$ENV_FILE" | \
             grep -v "^GOOGLE_APPLICATION_CREDENTIALS=" | \
             grep -v "^#" | \
-            grep -v "^$" >> .env.gcp || true
+            grep -v "^$" >> .env.gcp 2>/dev/null || true
         fi
         
-        gsutil cp .env.gcp gs://$BUCKET_NAME/config/.env
+        gsutil -q cp .env.gcp gs://$BUCKET_NAME/config/.env 2>/dev/null
         rm -f .env.gcp
         
-        echo "✅ Minimal .env uploaded (worker will set MLflow URI dynamically)"
+        echo "✅ Environment configured with MLflow at $ORCHESTRATOR_IP:5000"
+    else
+        echo "⚠️ Could not get orchestrator IP - worker will determine MLflow URI"
     fi
 else
-    echo "⚠️ No .env file found to upload"
-    
-    # Create a basic .env file for GCP environment
-    echo "📄 Creating basic .env file for GCP..."
-    cat > .env.gcp << BASIC_ENV_EOF
-# Basic GCP environment file created by deploy.sh
-# MLflow URI will be set by worker dynamically
-
-# GCP Environment Configuration
-# Workers use VM default service account
-BASIC_ENV_EOF
-    
-    gsutil cp .env.gcp gs://$BUCKET_NAME/config/.env
-    rm -f .env.gcp
-    
-    echo "✅ Basic .env file created and uploaded"
+    # Create basic .env file
+    echo "MLFLOW_TRACKING_URI=http://orchestrator:5000" | gsutil -q cp - gs://$BUCKET_NAME/config/.env 2>/dev/null
 fi
 
-# 5. Upload data files (with existence check)
-echo "📁 Uploading data files..."
+# 5. Upload data files
+echo "📁 Checking data files..."
+DATA_FILES_UPLOADED=0
+DATA_FILES_SKIPPED=0
+
 yq '.paths.data_files[]' "$CONFIG_FILE" | while read -r file; do
-    # Check file in multiple locations: current dir, git root, and labo3 subdirectory
+    # Find the data file
     DATA_FILE=""
     if [ -f "$file" ]; then
         DATA_FILE="$file"
@@ -231,34 +155,24 @@ yq '.paths.data_files[]' "$CONFIG_FILE" | while read -r file; do
     if [ -n "$DATA_FILE" ]; then
         GCS_PATH="gs://$BUCKET_NAME/$file"
         
-        # Check if file already exists in GCS
+        # Check if file needs uploading
         if gsutil -q stat "$GCS_PATH" 2>/dev/null; then
-            # File exists, compare sizes (much faster than hash)
             LOCAL_SIZE=$(stat -c%s "$DATA_FILE" 2>/dev/null || stat -f%z "$DATA_FILE" 2>/dev/null)
-            REMOTE_SIZE=$(gsutil du "$GCS_PATH" | awk '{print $1}')
+            REMOTE_SIZE=$(gsutil du "$GCS_PATH" 2>/dev/null | awk '{print $1}')
             
             if [ "$LOCAL_SIZE" = "$REMOTE_SIZE" ]; then
-                echo "⏭️  Skipping (same size): $file ($LOCAL_SIZE bytes)"
-                continue
-            else
-                echo "🔄 Updating (size changed): $file (local: $LOCAL_SIZE, remote: $REMOTE_SIZE bytes)"
+                continue  # Skip - same size
             fi
-        else
-            echo "📤 Uploading (new): $file"
         fi
         
-        gsutil cp "$DATA_FILE" "$GCS_PATH"
-    else
-        echo "⚠️ Data file not found: $file"
-        echo "   Checked: $(pwd)/$file"
-        echo "   Checked: $GIT_ROOT/$file"
-        echo "   Checked: $GIT_ROOT/labo3/$file"
-        echo "   Checked: labo3/$file"
+        # Upload the file
+        gsutil -q cp "$DATA_FILE" "$GCS_PATH" 2>/dev/null
+        echo "  📤 $(basename "$file")"
     fi
 done
 
-# 6. Check if VM is running
-echo "🔍 Checking orchestrator VM status..."
+# 6. Check and start VM if needed
+echo "🔍 Checking orchestrator VM..."
 VM_STATUS=$(gcloud compute instances describe $ORCHESTRATOR_VM --zone=$ZONE --format="value(status)" 2>/dev/null || echo "NOT_FOUND")
 
 if [ "$VM_STATUS" != "RUNNING" ]; then
@@ -267,8 +181,7 @@ if [ "$VM_STATUS" != "RUNNING" ]; then
         exit 1
     else
         echo "🚀 Starting orchestrator VM..."
-        gcloud compute instances start $ORCHESTRATOR_VM --zone=$ZONE
-        
+        gcloud compute instances start $ORCHESTRATOR_VM --zone=$ZONE > /dev/null 2>&1
         echo "⏳ Waiting for VM to be ready..."
         sleep 30
     fi
@@ -278,18 +191,13 @@ fi
 echo "🎯 Triggering deployment..."
 DEPLOY_ID=$(date '+%Y%m%d_%H%M%S')
 
-# Create deployment signal
 gcloud compute instances add-metadata $ORCHESTRATOR_VM \
     --zone=$ZONE \
-    --metadata deploy-trigger="$DEPLOY_ID"
+    --metadata deploy-trigger="$DEPLOY_ID" > /dev/null 2>&1
 
-echo "✅ Deployment triggered with ID: $DEPLOY_ID"
 echo ""
-echo "📊 Monitor deployment with:"
-echo "  gcloud compute ssh $ORCHESTRATOR_VM --zone=$ZONE --command='sudo tmux attach-session -t orchestrator'"
+echo "✅ Deployment triggered successfully!"
 echo ""
-echo "📈 Check MLflow at:"
-echo "  http://$(gcloud compute instances describe $ORCHESTRATOR_VM --zone=$ZONE --format='value(networkInterfaces[0].accessConfigs[0].natIP)'):5000"
-echo ""
-echo "📋 View logs with:"
-echo "  gcloud compute instances get-serial-port-output $ORCHESTRATOR_VM --zone=$ZONE"
+echo "📊 Monitor: gcloud compute ssh $ORCHESTRATOR_VM --zone=$ZONE --command='sudo tmux attach-session -t orchestrator'"
+echo "📈 MLflow: http://$(gcloud compute instances describe $ORCHESTRATOR_VM --zone=$ZONE --format='value(networkInterfaces[0].accessConfigs[0].natIP)' 2>/dev/null):5000"
+echo "📋 Logs: gcloud compute instances get-serial-port-output $ORCHESTRATOR_VM --zone=$ZONE"
