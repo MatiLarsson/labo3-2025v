@@ -112,11 +112,13 @@ check_instance_status() {
 check_job_completion() {
     local instance_name=$1
     
-    # Simple metadata check - instance should be running
-    local status=$(gcloud compute instances describe $instance_name --zone=$ZONE \
-        --format="value(metadata.items[key=job-status].value)" 2>/dev/null || echo "")
+    # Get all metadata and parse it manually since the format query is unreliable
+    local all_metadata=$(gcloud compute instances describe $instance_name --zone=$ZONE --format="value(metadata.items)" 2>/dev/null || echo "")
     
-    # Return the status directly (completed, failed, or empty/running)
+    # Parse the job-status from the metadata string
+    local status=$(echo "$all_metadata" | grep -o "'key': 'job-status', 'value': '[^']*'" | grep -o "'value': '[^']*'" | cut -d"'" -f4)
+    
+    # Return the status or default to running
     echo "${status:-running}"
 }
 
@@ -368,7 +370,10 @@ fi
 
 # Worker stays alive - let orchestrator handle shutdown
 echo "💤 Job complete. Worker waiting for orchestrator to terminate instance..."
-echo "📋 Status: \$(gcloud compute instances describe \$(hostname) --zone=$ZONE --format='value(metadata.items[key=job-status].value)' 2>/dev/null || echo 'unknown')"
+# Get status using the same parsing method as orchestrator
+WORKER_METADATA=\$(gcloud compute instances describe \$(hostname) --zone=$ZONE --format="value(metadata.items)" 2>/dev/null || echo "")
+WORKER_STATUS=\$(echo "\$WORKER_METADATA" | grep -o "'key': 'job-status', 'value': '[^']*'" | grep -o "'value': '[^']*'" | cut -d"'" -f4)
+echo "📋 Status: \${WORKER_STATUS:-unknown}"
 
 # Keep the worker alive - orchestrator will terminate when ready
 while true; do
