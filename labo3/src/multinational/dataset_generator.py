@@ -558,7 +558,7 @@ class DatasetGenerator:
         return {
             'memory_limit_gb': available_ram_gb,
             'temp_directory_size_gb': available_disk_gb,
-            'threads': available_cpus,
+            'threads': threads_to_use,
             'temp_directory': temp_dir
         }
 

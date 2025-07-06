@@ -267,3 +267,6 @@ data/
 tmp/startup.sh
 **tmp/
 tmp/
+
+**.vscode/
+.vscode/
