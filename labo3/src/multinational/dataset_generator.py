@@ -1490,7 +1490,7 @@ class DatasetGenerator:
                     )},
 
                 FROM fixed_standardized_lag_series
-                WHERE ps.periodo >= {self.dataset["min_periodo"]}  -- Only {self.dataset["min_periodo"]} and onwards
+                WHERE periodo >= {self.dataset["min_periodo"]}  -- Only {self.dataset["min_periodo"]} and onwards
                 ORDER BY product_id, customer_id, periodo
             );             
             """)
