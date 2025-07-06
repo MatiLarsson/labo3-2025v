@@ -119,8 +119,12 @@ cd /opt/repo/labo3
 
 DEPLOY_ID=$(date '+%Y%m%d_%H%M%S')
 
+# Erase previous results
+echo "🧹 Cleaning up previous logs..."
+gsutil -m rm -r gs://$BUCKET_NAME/run_logs/ 2>/dev/null || echo "📂 No previous results to clean"
+
 # Upload run.log
-gsutil cp run.log gs://$BUCKET_NAME/results/$DEPLOY_ID/run.log 2>/dev/null || echo "⚠️ Could not upload run.log"
+gsutil cp run.log gs://$BUCKET_NAME/run_logs/$DEPLOY_ID/run.log 2>/dev/null || echo "⚠️ Could not upload run.log"
 
 INSTANCE_NAME=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/name" -H "Metadata-Flavor: Google")
 INSTANCE_ZONE=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/zone" -H "Metadata-Flavor: Google" | sed 's|.*/||')

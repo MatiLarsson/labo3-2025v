@@ -516,7 +516,7 @@ class DatasetGenerator:
         return ",\n".join(z_slope_clauses)
     
     @staticmethod
-    def configure_duckdb_auto(conn, custom_thread_multiplier=None):
+    def _configure_duckdb_auto(conn, custom_thread_multiplier=None):
         """
         Configura DuckDB automáticamente usando el 80% de los recursos disponibles
         
