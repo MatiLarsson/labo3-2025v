@@ -16,7 +16,12 @@ INSTANCE_NAME=$(yq '.jobs[0].instance_name' $CONFIG_FILE)
 MACHINE_TYPE=$(yq '.jobs[0].machine_type' $CONFIG_FILE)
 REPO_URL=$(yq '.repository.url' $CONFIG_FILE)
 
+# Parse disk configuration
+BOOT_DISK_SIZE=$(yq '.jobs[0].boot_disk_size // "100GB"' $CONFIG_FILE)
+BOOT_DISK_TYPE=$(yq '.jobs[0].boot_disk_type // "pd-standard"' $CONFIG_FILE)
+
 echo "🚀 Deploying ML job: $INSTANCE_NAME"
+echo "💾 Boot disk: $BOOT_DISK_SIZE ($BOOT_DISK_TYPE)"
 
 # Push code
 git add -A && git commit -m "Deploy $(date)" || true
@@ -69,6 +74,14 @@ cat > /tmp/startup.sh << 'EOF'
 #!/bin/bash
 set -e
 
+echo "🔧 Expanding filesystem to use full disk..."
+# Expand the filesystem to use the full disk size
+sudo resize2fs /dev/sda1 2>/dev/null || echo "⚠️ Resize2fs not needed or failed"
+
+# Check available disk space
+echo "💾 Disk space after expansion:"
+df -h /
+
 apt-get update && apt-get install -y git tmux python3-pip python3-venv wget
 wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
 chmod +x /usr/local/bin/yq
@@ -91,6 +104,7 @@ tmux send-keys -t ml "echo 'Contents of .env file:' && cat .env" Enter
 tmux send-keys -t ml "python3 -m venv .venv && source .venv/bin/activate" Enter
 tmux send-keys -t ml "export \$(cat .env | xargs) && echo 'MLFLOW_TRACKING_URI=' \$MLFLOW_TRACKING_URI" Enter
 tmux send-keys -t ml "uv sync" Enter
+tmux send-keys -t ml "echo '💾 Final disk check before ML script:' && df -h /" Enter
 tmux send-keys -t ml "python scripts/$SCRIPT_NAME 2>&1 | tee run.log" Enter
 tmux send-keys -t ml "echo ML_SCRIPT_DONE > /tmp/ml_done" Enter
 
@@ -117,17 +131,20 @@ gcloud compute instances delete $INSTANCE_NAME --zone=$INSTANCE_ZONE --quiet || 
 EOF
 
 # Create instance
+echo "🖥️ Creating instance with $BOOT_DISK_SIZE boot disk..."
 gcloud compute instances create $INSTANCE_NAME \
     --zone=$ZONE \
     --machine-type=$MACHINE_TYPE \
     --image-family=ubuntu-2204-lts \
     --image-project=ubuntu-os-cloud \
+    --boot-disk-size=$BOOT_DISK_SIZE \
+    --boot-disk-type=$BOOT_DISK_TYPE \
     --scopes=cloud-platform \
     --preemptible \
     --metadata-from-file startup-script=/tmp/startup.sh \
     --metadata project-id=$PROJECT_ID,bucket-name=$BUCKET_NAME,script-name=$SCRIPT_NAME,repo-url=$REPO_URL
 
-echo "✅ Instance created: $INSTANCE_NAME"
+echo "✅ Instance created: $INSTANCE_NAME with $BOOT_DISK_SIZE boot disk"
 echo "📊 Monitor: gcloud compute ssh $INSTANCE_NAME --zone=$ZONE --command='sudo tmux attach -t ml'"
 
 rm /tmp/startup.sh
