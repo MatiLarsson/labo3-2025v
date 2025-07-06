@@ -534,20 +534,20 @@ class DatasetGenerator:
         
         # 3. Detectar CPUs (80% de los cores disponibles, mínimo 1)
         total_cpus = os.cpu_count()
-        available_cpus = total_cpus * 1.5
+        threads_to_use = round(total_cpus * 1.5)
         
         # 4. Logging de la configuración detectada
         print(f"🔧 Auto-configurando DuckDB:")
         print(f"   💾 RAM total: {total_ram_gb:.1f} GB -> usando {available_ram_gb} GB")
         print(f"   💿 Disco libre: {free_disk_gb:.1f} GB -> usando {available_disk_gb} GB")
-        print(f"   🔄 CPUs: {total_cpus} -> usando {available_cpus} threads")
+        print(f"   🔄 CPUs: {total_cpus} -> usando {threads_to_use} threads")
         print(f"   📁 Directorio temporal: {temp_dir}")
         
         # 5. Aplicar configuración
         conn.execute(f"PRAGMA memory_limit='{available_ram_gb}GiB'")
         conn.execute(f"PRAGMA max_temp_directory_size='{available_disk_gb}GiB'")
         conn.execute(f"PRAGMA temp_directory='{temp_dir}'")
-        conn.execute(f"PRAGMA threads={available_cpus}")
+        conn.execute(f"PRAGMA threads={threads_to_use}")
         
         # 6. Configuraciones adicionales para optimización
         conn.execute("PRAGMA enable_progress_bar=true")

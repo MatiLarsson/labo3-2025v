@@ -142,9 +142,14 @@ gcloud compute instances create $INSTANCE_NAME \
     --preemptible \
     --metadata-from-file startup-script=/tmp/startup.sh \
     --metadata project-id=$PROJECT_ID,bucket-name=$BUCKET_NAME,script-name=$SCRIPT_NAME,repo-url=$REPO_URL \
-    --quiet
+    2>&1 | grep -v "Disk size.*is larger than image size" | grep -v "You might need to resize"
 
-echo "✅ Instance created: $INSTANCE_NAME"
-echo "📊 Monitor: gcloud compute ssh $INSTANCE_NAME --zone=$ZONE --command='sudo tmux attach -t ml'"
+if [ ${PIPESTATUS[0]} -eq 0 ]; then
+    echo "✅ Instance created successfully"
+    echo "📊 Monitor: gcloud compute ssh $INSTANCE_NAME --zone=$ZONE --command='sudo tmux attach -t ml'"
+else
+    echo "❌ Instance creation failed"
+    exit 1
+fi
 
 rm /tmp/startup.sh
