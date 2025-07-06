@@ -128,6 +128,6 @@ gcloud compute instances create $INSTANCE_NAME \
     --metadata project-id=$PROJECT_ID,bucket-name=$BUCKET_NAME,script-name=$SCRIPT_NAME,repo-url=$REPO_URL
 
 echo "✅ Instance created: $INSTANCE_NAME"
-echo "📊 Monitor: gcloud compute ssh $INSTANCE_NAME --zone=$ZONE --command='tmux attach -t ml'"
+echo "📊 Monitor: gcloud compute ssh $INSTANCE_NAME --zone=$ZONE --command='sudo tmux attach -t ml \; copy-mode'"
 
 rm /tmp/startup.sh
