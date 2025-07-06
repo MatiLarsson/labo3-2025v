@@ -18,7 +18,7 @@ jobs:
     machine_type: "n2-highmem-64" # "n2-highmem-64" -> 64 CPU, 512GB RAM
     preemptible: true
     boot_disk_size: "500GB"
-    boot_disk_type: "pd-standard"  # type: pd-standard, pd-ssd, pd-balanced
+    boot_disk_type: "pd-ssd"  # type: pd-standard, pd-ssd, pd-balanced
 
 paths:
   data_files:
