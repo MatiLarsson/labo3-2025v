@@ -75,7 +75,7 @@ cat > /tmp/startup.sh << 'EOF'
 #!/bin/bash
 set -e
 
-apt-get update && apt-get install -y git tmux python3-pip wget
+apt-get update && apt-get install -y git tmux python3-pip python3-venv wget
 wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
 chmod +x /usr/local/bin/yq
 pip3 install uv
@@ -89,23 +89,12 @@ REPO_URL=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/
 
 gcloud config set project $PROJECT_ID --quiet
 
-git clone $REPO_URL repo
-cd repo/labo3
-
-uv venv && source .venv/bin/activate
-uv pip install -e .
-
-gsutil cp gs://$BUCKET_NAME/config/.env .env 2>/dev/null || echo "No .env file found"
-
-yq '.paths.data_files[]' project_config.yml | while read file; do
-    mkdir -p $(dirname $file)
-    gsutil cp gs://$BUCKET_NAME/$file $file
-done
-
 echo "Starting ML script in tmux..."
 tmux new-session -d -s ml || echo "⚠️ Failed to start tmux"
-tmux send-keys -t ml "source .venv/bin/activate" Enter
-tmux send-keys -t ml "source .env 2>/dev/null || true" Enter
+tmux send-keys -t ml "git clone $REPO_URL repo && cd repo/labo3" Enter
+tmux send-keys -t ml "gsutil cp gs://$BUCKET_NAME/config/.env .env 2>/dev/null || echo 'No .env file found'" Enter
+tmux send-keys -t ml "python3 -m venv .venv && source .venv/bin/activate" Enter
+tmux send-keys -t ml "uv sync" Enter
 tmux send-keys -t ml "python scripts/$SCRIPT_NAME 2>&1 | tee run.log" Enter
 tmux send-keys -t ml "echo ML_SCRIPT_DONE > /tmp/ml_done" Enter
 
@@ -116,11 +105,19 @@ while [ ! -f /tmp/ml_done ]; do
 done
 
 echo "ML script completed, uploading results..."
+
+cd /opt/repo/labo3
+
 DEPLOY_ID=$(date '+%Y%m%d_%H%M%S')
-gsutil -m cp *.pkl *.csv *.parquet *.json gs://$BUCKET_NAME/results/$DEPLOY_ID/ 2>/dev/null || true
+
+# Upload run.log
 gsutil cp run.log gs://$BUCKET_NAME/results/$DEPLOY_ID/run.log 2>/dev/null || echo "⚠️ Could not upload run.log"
 
-shutdown -h +1
+INSTANCE_NAME=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/name" -H "Metadata-Flavor: Google")
+INSTANCE_ZONE=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/zone" -H "Metadata-Flavor: Google" | sed 's|.*/||')
+
+# Erase vm
+gcloud compute instances delete $INSTANCE_NAME --zone=$INSTANCE_ZONE --quiet || echo "⚠️ Could not delete instance"
 EOF
 
 # Create instance
