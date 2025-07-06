@@ -22,7 +22,7 @@ class LightGBMModel:
     def __init__(self, config: ProjectConfig):
         self.config = config
         self.experiment_name = self.config.experiment_name
-        self.model_dataset = self.config.model_dataset
+        self.dataset = self.config.dataset
         self.strategy = self.config.strategy
         self.cv = self.config.cv
         self.optimizer = self.config.optimizer
@@ -76,7 +76,7 @@ class LightGBMModel:
         # Download dataset from MLflow storage
         run_id = existing_runs.iloc[0]['run_id']
         client = mlflow.tracking.MlflowClient()
-        local_path = client.download_artifacts(run_id, self.model_dataset["dataset_name"])
+        local_path = client.download_artifacts(run_id, self.dataset["dataset_name"])
         
         self.df = pl.read_parquet(local_path)
         logger.info("✅ Data successfully loaded from storage.")
@@ -88,10 +88,10 @@ class LightGBMModel:
         # Numeric features are all columns except categorical and target
         self.num_features = [
             col for col in self.df.columns 
-            if col not in self.model_dataset["cat_features"] and col != self.model_dataset["target"]
+            if col not in self.dataset["cat_features"] and col != self.dataset["target"]
         ]
 
-        self.cat_features = self.model_dataset["cat_features"]
+        self.cat_features = self.dataset["cat_features"]
         
         logger.info(f"Found {len(self.num_features)} numeric features")
         logger.info(f"Found {len(self.cat_features)} categorical features")
@@ -100,7 +100,7 @@ class LightGBMModel:
         """Clip extreme values in numeric features."""
         logger.info("✂️ Clipping extreme values in dataset...")
         
-        clipping_threshold = float(self.model_dataset["clipping_threshold"])
+        clipping_threshold = float(self.dataset["clipping_threshold"])
         
         logger.info("Before clipping:")
         min_vals = self.df.select([pl.col(col).min().alias(f"{col}_min") for col in self.num_features])
@@ -215,14 +215,14 @@ class LightGBMModel:
     def _create_time_based_folds(self, train_dataset):
         """Create time-based folds for cross-validation."""
         month_counts = (train_dataset
-                    .group_by(self.model_dataset["period"])
+                    .group_by(self.dataset["period"])
                     .agg(pl.len().alias('count'))
-                    .sort(self.model_dataset["period"]))
+                    .sort(self.dataset["period"]))
         
         total_samples = month_counts['count'].sum()
         target_samples_per_fold = total_samples / self.cv["n_folds"]
         
-        months = month_counts[self.model_dataset["period"]].to_list()
+        months = month_counts[self.dataset["period"]].to_list()
         counts = month_counts['count'].to_list()
         
         folds = []
@@ -264,7 +264,7 @@ class LightGBMModel:
         fold_indices = []
         
         for fold in self.folds:
-            fold_mask = train_dataset.select(pl.col(self.model_dataset["period"]).is_in(fold['months']))
+            fold_mask = train_dataset.select(pl.col(self.dataset["period"]).is_in(fold['months']))
             fold_idx = np.where(fold_mask.to_numpy().flatten())[0]
             fold_indices.append(fold_idx)
         
@@ -275,9 +275,9 @@ class LightGBMModel:
         logger.info("🔄 Splitting data...")
         
         # Filter datasets based on the defined periods, the cherry flag and the problematic standardization flag
-        train_dataset = self.df.filter(pl.col(self.model_dataset["period"]) < self.strategy["test_month"]).filter(pl.col('cherry_flag') == 1).filter(pl.col('invalid_standardization_flag') == 0)
-        test_dataset = self.df.filter(pl.col(self.model_dataset["period"]) == self.strategy["test_month"]).filter(pl.col('cherry_flag') == 1).filter(pl.col('invalid_standardization_flag') == 0)
-        self.kaggle_dataset = self.df.filter(pl.col(self.model_dataset["period"]) == self.strategy["kaggle_month"])
+        train_dataset = self.df.filter(pl.col(self.dataset["period"]) < self.strategy["test_month"]).filter(pl.col('cherry_flag') == 1).filter(pl.col('invalid_standardization_flag') == 0)
+        test_dataset = self.df.filter(pl.col(self.dataset["period"]) == self.strategy["test_month"]).filter(pl.col('cherry_flag') == 1).filter(pl.col('invalid_standardization_flag') == 0)
+        self.kaggle_dataset = self.df.filter(pl.col(self.dataset["period"]) == self.strategy["kaggle_month"])
 
         # Store datasets info for MLflow logging
         self.train_size = len(train_dataset)
@@ -296,7 +296,7 @@ class LightGBMModel:
         self.global_std_values_train = train_dataset.select(pl.col('quantity_tn_cumulative_std')).to_numpy().flatten()
         self.global_std_values_test = test_dataset.select(pl.col('quantity_tn_cumulative_std')).to_numpy().flatten()
 
-        self.categorical_columns_idx = [train_dataset.drop('target').columns.index(col) for col in self.model_dataset["cat_features"]]
+        self.categorical_columns_idx = [train_dataset.drop('target').columns.index(col) for col in self.dataset["cat_features"]]
 
         # Calculate sample weights
         weight_lookup = (
@@ -312,10 +312,10 @@ class LightGBMModel:
             .flatten()
         )
 
-        self.X_train = train_dataset.drop([self.model_dataset["target"]]).to_numpy()
-        self.X_test = test_dataset.drop([self.model_dataset["target"]]).to_numpy()
-        self.y_train = train_dataset.select(pl.col(self.model_dataset["target"])).to_numpy().flatten()
-        self.y_test = test_dataset.select(pl.col(self.model_dataset["target"])).to_numpy().flatten()
+        self.X_train = train_dataset.drop([self.dataset["target"]]).to_numpy()
+        self.X_test = test_dataset.drop([self.dataset["target"]]).to_numpy()
+        self.y_train = train_dataset.select(pl.col(self.dataset["target"])).to_numpy().flatten()
+        self.y_test = test_dataset.select(pl.col(self.dataset["target"])).to_numpy().flatten()
 
         self._create_time_based_folds(train_dataset)
         self._get_fold_indices(train_dataset)
@@ -656,7 +656,7 @@ class LightGBMModel:
                             
                             # Get feature importance from loaded model
                             model_feature_importance = model.feature_importance(importance_type='gain')
-                            feature_names = self.df.drop([self.model_dataset["target"]]).columns
+                            feature_names = self.df.drop([self.dataset["target"]]).columns
 
                             importance_dict = {
                                 feature: float(importance)
@@ -713,7 +713,7 @@ class LightGBMModel:
 
                 # Get feature importance as dictionary
                 model_feature_importance = model.feature_importance(importance_type='gain')
-                feature_names = self.df.drop([self.model_dataset["target"]]).columns
+                feature_names = self.df.drop([self.dataset["target"]]).columns
 
                 importance_dict = {
                     feature: float(importance)
@@ -802,7 +802,7 @@ class LightGBMModel:
 
         with mlflow.start_run(run_name="kaggle_predictions", nested=True):
             logger.info("Retrieving product IDs for Kaggle submission...")
-            kaggle_product_ids_content = self.gcp_manager.download_file_as_bytes(self.model_dataset["products_for_kaggle_file"])
+            kaggle_product_ids_content = self.gcp_manager.download_file_as_bytes(self.dataset["products_for_kaggle_file"])
             required_product_ids_df = pl.read_csv(BytesIO(kaggle_product_ids_content), has_header=True)
             kaggle_product_ids = required_product_ids_df.select('product_id').to_numpy().flatten()
 
@@ -846,7 +846,7 @@ class LightGBMModel:
             logger.info(f"Proportion of non-compliant quantity_tn_rolling_mean_11m: {proportion_non_compliant_quantity_tn_rolling_mean_11m:.4f} ({non_compliant_quantity_tn_rolling_mean_11m_sum}/{total_quantity_tn_rolling_mean_11m_sum})")
 
             # Prepare predictions for model compliant rows
-            kaggle_X = kaggle_model_compliant.drop([self.model_dataset["target"]]).to_numpy()
+            kaggle_X = kaggle_model_compliant.drop([self.dataset["target"]]).to_numpy()
             predictions = np.mean([model.predict(kaggle_X) for model in self.final_models], axis=0)
 
             kaggle_product_ids_actual = kaggle_model_compliant.select('product_id').to_numpy().flatten()
@@ -901,8 +901,6 @@ class LightGBMModel:
             
             # Log submission statistics
             mlflow.log_metric("kaggle_total_products", len(final_submission_df))
-            mlflow.log_metric("kaggle_predictions_mean", float(np.mean(final_submission_df['tn'].to_numpy())))
-            mlflow.log_metric("kaggle_predictions_sum", float(np.sum(final_submission_df['tn'].to_numpy())))
             
             # Log submission file to MLflow
             mlflow.log_artifact(submission_path, artifact_path="kaggle_submission")

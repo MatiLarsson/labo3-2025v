@@ -8,10 +8,8 @@ from pydantic import BaseModel
 class ProjectConfig(BaseModel):
     experiment_name: str
     dataset_generation: Dict[str, Any]  # Matches YAML structure
-    model_dataset: Dict[str, Any]  # Added - matches YAML
     strategy: Dict[str, Any]  # Strategy configuration
     gcp: Dict[str, Any]  # Configuration for Google Cloud Storage
-    testing_limits: Dict[str, Any]  # Configuration for testing limits
     cv: Dict[str, Any]  # Cross-validation configuration
     optimizer: Dict[str, Any]  # Optuna hyperparameter optimization settings
     final_train: Dict[str, Any]  # Final training configuration

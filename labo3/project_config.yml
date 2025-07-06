@@ -25,21 +25,23 @@ paths:
     - "data/tb_productos.txt"
     - "data/tb_stocks.txt"
 
-dataset_generation:
-  testing_mode: true  # Set to false for full dataset in production
-  max_lag_periods: 35
-  anchored_ratios_periods: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
-  rolling_stats_window_sizes: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
+dataset:
+  testing_mode: false  # Set to false for full dataset in production
+  min_periodo: 201801 # always applies
+  max_customers: 50 # ignored if not in testing mode
+  max_products: 20 # ignored if not in testing mode
+  future_periods_extension: 2
+  max_lag_periods: 11
+  anchored_ratios_periods: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] # [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
+  rolling_stats_window_sizes: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11] # [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
   rolling_statistics: ['mean', 'median', 'std', 'min', 'max', 'sum', 'count', 'variance', 'skewness', 'kurtosis']
-  reg_slopes_window_sizes: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
-  max_z_lag_periods: 35
-  z_anchored_delta_lag_periods: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
-  z_adjacent_delta_lag_periods: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34]
-  z_anchored_ratio_lag_periods: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
-  z_adjacent_ratio_lag_periods: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34]
-  z_regression_slopes_window_sizes: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
-
-model_dataset:
+  reg_slopes_window_sizes: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11] # [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
+  max_z_lag_periods: 11
+  z_anchored_delta_lag_periods: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] # [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
+  z_adjacent_delta_lag_periods: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] # [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34]
+  z_anchored_ratio_lag_periods: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] # [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
+  z_adjacent_ratio_lag_periods: [2, 3, 4, 5, 6, 7, 8, 9, 10] # [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34]
+  z_regression_slopes_window_sizes: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11] # [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
   stocks_file: "tb_stocks.txt"
   products_file: "tb_productos.txt"
   sell_in_file: "sell-in.txt"
@@ -58,12 +60,6 @@ model_dataset:
 strategy:
   test_month: 201910 # int
   kaggle_month: 201912 # int
-
-testing_limits:
-  testing_mode: false
-  min_periodo: 201701 # ignored if not in testing mode
-  max_customers: 50 # ignored if not in testing mode
-  max_products: 20 # ignored if not in testing mode
 
 cv:
   n_folds: 5
@@ -99,4 +95,4 @@ optimizer:
     metric: 'custom'
 
 final_train:
-  num_seeds: 100
+  num_seeds: 30

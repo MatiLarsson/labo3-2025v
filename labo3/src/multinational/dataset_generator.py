@@ -3,7 +3,10 @@ import mlflow
 import duckdb
 from loguru import logger
 import os
-import io
+import shutil
+import psutil
+import math
+from pathlib import Path
 
 from multinational.gcs_manager import GCSManager
 from multinational.config import ProjectConfig
@@ -13,9 +16,7 @@ class DatasetGenerator:
     def __init__(self, config: ProjectConfig):
         self.config = config
         self.experiment_name = self.config.experiment_name
-        self.model_dataset = self.config.model_dataset
-        self.testing_limits = self.config.testing_limits
-        self.dataset_generation = self.config.dataset_generation
+        self.dataset = self.config.dataset
         self.gcp_manager = GCSManager(self.config)
         self.sql_functions = {
             'mean': 'AVG',
@@ -110,13 +111,12 @@ class DatasetGenerator:
         Returns:
             str: SQL LIMIT clause if in testing mode, empty string otherwise
         """
-        if self.testing_limits["testing_mode"]:
+        if self.dataset["testing_mode"]:
             logger.info("🧪 Applying testing limits for faster development")
 
             testing_limiter = f"""
-                AND ps.periodo >= {self.testing_limits["min_periodo"]}  -- Only {self.testing_limits["min_periodo"]} and onwards
-                AND dc.customer_id IN (SELECT customer_id FROM sell_in LIMIT {self.testing_limits["max_customers"]})  -- Top {self.testing_limits["max_customers"]} customers
-                AND dp.product_id IN (SELECT product_id FROM sell_in GROUP BY product_id ORDER BY SUM(tn) DESC LIMIT {self.testing_limits["max_products"]})  -- Top {self.testing_limits["max_products"]} products by volume
+                AND dc.customer_id IN (SELECT customer_id FROM sell_in LIMIT {self.dataset["max_customers"]})  -- Top {self.dataset["max_customers"]} customers
+                AND dp.product_id IN (SELECT product_id FROM sell_in GROUP BY product_id ORDER BY SUM(tn) DESC LIMIT {self.dataset["max_products"]})  -- Top {self.dataset["max_products"]} products by volume
             """
         else:
             testing_limiter = ""
@@ -514,6 +514,53 @@ class DatasetGenerator:
             z_slope_clauses.append(z_slope_clause)
         
         return ",\n".join(z_slope_clauses)
+    
+    @staticmethod
+    def _configure_duckdb_auto(conn):
+        """
+        Configura DuckDB automáticamente usando el 80% de los recursos disponibles
+        """
+        # 1. Detectar RAM disponible (80% de la total)
+        total_ram_gb = psutil.virtual_memory().total / (1024**3)
+        available_ram_gb = math.floor(total_ram_gb * 0.8)
+        
+        # 2. Detectar espacio en disco disponible (80% del espacio libre)
+        temp_dir = '/tmp/duckdb_temp'
+        Path(temp_dir).mkdir(exist_ok=True)
+        
+        disk_usage = shutil.disk_usage(temp_dir)
+        free_disk_gb = disk_usage.free / (1024**3)
+        available_disk_gb = math.floor(free_disk_gb * 0.8)
+        
+        # 3. Detectar CPUs (80% de los cores disponibles, mínimo 1)
+        total_cpus = os.cpu_count()
+        available_cpus = max(1, math.floor(total_cpus * 0.8))
+        
+        # 4. Logging de la configuración detectada
+        print(f"🔧 Auto-configurando DuckDB:")
+        print(f"   💾 RAM total: {total_ram_gb:.1f} GB -> usando {available_ram_gb} GB")
+        print(f"   💿 Disco libre: {free_disk_gb:.1f} GB -> usando {available_disk_gb} GB")
+        print(f"   🔄 CPUs: {total_cpus} -> usando {available_cpus} threads")
+        print(f"   📁 Directorio temporal: {temp_dir}")
+        
+        # 5. Aplicar configuración
+        conn.execute(f"PRAGMA memory_limit='{available_ram_gb}GiB'")
+        conn.execute(f"PRAGMA max_temp_directory_size='{available_disk_gb}GiB'")
+        conn.execute(f"PRAGMA temp_directory='{temp_dir}'")
+        conn.execute(f"PRAGMA threads={available_cpus}")
+        
+        # 6. Configuraciones adicionales para optimización
+        conn.execute("PRAGMA enable_progress_bar=true")
+        conn.execute("PRAGMA preserve_insertion_order=false")
+        
+        print("✅ DuckDB configurado automáticamente")
+        
+        return {
+            'memory_limit_gb': available_ram_gb,
+            'temp_directory_size_gb': available_disk_gb,
+            'threads': available_cpus,
+            'temp_directory': temp_dir
+        }
 
     def generate_dataset(self):
         """
@@ -526,7 +573,10 @@ class DatasetGenerator:
             str: Complete SQL query for dataset creation
         """
 
-        with mlflow.start_run(run_name="dataset_generation"):
+        duck_db_auto_config = self._configure_duckdb_auto(self.conn)
+        logger.info(f"🔧 DuckDB auto-configuration: {duck_db_auto_config}")
+
+        with mlflow.start_run(run_name="dataset"):
             # Check if a dataset already exists for this experiment in MLflow, if so, skip generation
             existing_runs = mlflow.search_runs(
                 experiment_names=[self.experiment_name],
@@ -716,7 +766,10 @@ class DatasetGenerator:
                         AND ps.periodo = s.periodo
                     -- Only include periods where the customer and product overlap with their active periods
                     WHERE ps.periodo >= GREATEST(ca.customer_first_active_period, pa.product_first_active_period)
-                        AND ps.periodo <= LEAST(ca.customer_last_active_period, pa.product_last_active_period)
+                        AND ps.periodo <= CAST(strftime('%Y%m', date_add(
+                            strptime(CAST(LEAST(ca.customer_last_active_period, pa.product_last_active_period) AS VARCHAR), '%Y%m'),
+                            INTERVAL '{self.dataset["future_periods_extension"]} months'
+                        )) AS BIGINT)
                         {testing_limiter}
                     -- Only include pairs of product_id and customer_id that had at least one sell_in record
                         AND EXISTS (
@@ -1227,98 +1280,98 @@ class DatasetGenerator:
                             z_mean_column="quantity_cust_request_qty_cumulative_mean",
                             z_std_column="quantity_cust_request_qty_cumulative_std",
                             column_name='quantity_cust_request_qty',
-                            max_z_lag=self.dataset_generation["max_lag_periods"],
+                            max_z_lag=self.dataset["max_lag_periods"],
                             partition_columns=['product_id', 'customer_id']
                         )},
                         {self._generate_lag_features_on_standardized_values(
                             z_mean_column="quantity_cust_request_tn_cumulative_mean",
                             z_std_column="quantity_cust_request_tn_cumulative_std",
                             column_name='quantity_cust_request_tn',
-                            max_z_lag=self.dataset_generation["max_lag_periods"],
+                            max_z_lag=self.dataset["max_lag_periods"],
                             partition_columns=['product_id', 'customer_id']
                         )},
                         {self._generate_lag_features_on_standardized_values(
                             z_mean_column="quantity_tn_cumulative_mean",
                             z_std_column="quantity_tn_cumulative_std",
                             column_name='quantity_tn',
-                            max_z_lag=self.dataset_generation["max_lag_periods"],
+                            max_z_lag=self.dataset["max_lag_periods"],
                             partition_columns=['product_id', 'customer_id']
                         )},
                         {self._generate_lag_features_on_standardized_values(
                             z_mean_column="quantity_stock_final_cumulative_mean",
                             z_std_column="quantity_stock_final_cumulative_std",
                             column_name='quantity_stock_final',
-                            max_z_lag=self.dataset_generation["max_lag_periods"],
+                            max_z_lag=self.dataset["max_lag_periods"],
                             partition_columns=['product_id', 'customer_id']
                         )},
 
                         -- Anchored Ratios
                         {self._generate_anchored_ratio_features(
                             column_name='quantity_cust_request_qty',
-                            ratio_lag_periods=self.dataset_generation["anchored_ratios_periods"],
+                            ratio_lag_periods=self.dataset["anchored_ratios_periods"],
                             partition_columns=['product_id', 'customer_id']
                         )},
                         {self._generate_anchored_ratio_features(
                             column_name='quantity_cust_request_tn',
-                            ratio_lag_periods=self.dataset_generation["anchored_ratios_periods"],
+                            ratio_lag_periods=self.dataset["anchored_ratios_periods"],
                             partition_columns=['product_id', 'customer_id']
                         )},
                         {self._generate_anchored_ratio_features(
                             column_name='quantity_tn',
-                            ratio_lag_periods=self.dataset_generation["anchored_ratios_periods"],
+                            ratio_lag_periods=self.dataset["anchored_ratios_periods"],
                             partition_columns=['product_id', 'customer_id']
                         )},
                         {self._generate_anchored_ratio_features(
                             column_name='quantity_stock_final',
-                            ratio_lag_periods=self.dataset_generation["anchored_ratios_periods"],
+                            ratio_lag_periods=self.dataset["anchored_ratios_periods"],
                             partition_columns=['product_id', 'customer_id']
                         )},
 
                         -- Rolling Stats
                         {self._generate_rolling_statistics(
                             column_name='quantity_cust_request_qty',
-                            rolling_stats_window_sizes=self.dataset_generation["rolling_stats_window_sizes"],
-                            rolling_statistics=self.dataset_generation["rolling_statistics"],
+                            rolling_stats_window_sizes=self.dataset["rolling_stats_window_sizes"],
+                            rolling_statistics=self.dataset["rolling_statistics"],
                             partition_columns=['product_id', 'customer_id']
                         )},
                         {self._generate_rolling_statistics(
                             column_name='quantity_cust_request_tn',
-                            rolling_stats_window_sizes=self.dataset_generation["rolling_stats_window_sizes"],
-                            rolling_statistics=self.dataset_generation["rolling_statistics"],
+                            rolling_stats_window_sizes=self.dataset["rolling_stats_window_sizes"],
+                            rolling_statistics=self.dataset["rolling_statistics"],
                             partition_columns=['product_id', 'customer_id']
                         )},
                         {self._generate_rolling_statistics(
                             column_name='quantity_tn',
-                            rolling_stats_window_sizes=self.dataset_generation["rolling_stats_window_sizes"],
-                            rolling_statistics=self.dataset_generation["rolling_statistics"],
+                            rolling_stats_window_sizes=self.dataset["rolling_stats_window_sizes"],
+                            rolling_statistics=self.dataset["rolling_statistics"],
                             partition_columns=['product_id', 'customer_id']
                         )},
                         {self._generate_rolling_statistics(
                             column_name='quantity_stock_final',
-                            rolling_stats_window_sizes=self.dataset_generation["rolling_stats_window_sizes"],
-                            rolling_statistics=self.dataset_generation["rolling_statistics"],
+                            rolling_stats_window_sizes=self.dataset["rolling_stats_window_sizes"],
+                            rolling_statistics=self.dataset["rolling_statistics"],
                             partition_columns=['product_id', 'customer_id']
                         )},
 
                         -- Regression Slopes
                         {self._generate_regression_slopes(
                             column_name='quantity_cust_request_qty',
-                            regression_slopes_window_sizes=self.dataset_generation["reg_slopes_window_sizes"],
+                            regression_slopes_window_sizes=self.dataset["reg_slopes_window_sizes"],
                             partition_columns=['product_id', 'customer_id']
                         )},
                         {self._generate_regression_slopes(
                             column_name='quantity_cust_request_tn',
-                            regression_slopes_window_sizes=self.dataset_generation["reg_slopes_window_sizes"],
+                            regression_slopes_window_sizes=self.dataset["reg_slopes_window_sizes"],
                             partition_columns=['product_id', 'customer_id']
                         )},
                         {self._generate_regression_slopes(
                             column_name='quantity_tn',
-                            regression_slopes_window_sizes=self.dataset_generation["reg_slopes_window_sizes"],
+                            regression_slopes_window_sizes=self.dataset["reg_slopes_window_sizes"],
                             partition_columns=['product_id', 'customer_id']
                         )},
                         {self._generate_regression_slopes(
                             column_name='quantity_stock_final',
-                            regression_slopes_window_sizes=self.dataset_generation["reg_slopes_window_sizes"],
+                            regression_slopes_window_sizes=self.dataset["reg_slopes_window_sizes"],
                             partition_columns=['product_id', 'customer_id']
                         )}
                         
@@ -1329,114 +1382,115 @@ class DatasetGenerator:
                     -- Anchored Delta Z-lag
                     {self._generate_anchored_delta_features_on_zlag_columns(
                         base_column_name='quantity_cust_request_qty',
-                        max_z_lag=self.dataset_generation["max_z_lag_periods"],
-                        z_anchored_delta_lag_periods=self.dataset_generation["z_anchored_delta_lag_periods"]
+                        max_z_lag=self.dataset["max_z_lag_periods"],
+                        z_anchored_delta_lag_periods=self.dataset["z_anchored_delta_lag_periods"]
                     )},
                     {self._generate_anchored_delta_features_on_zlag_columns(
                         base_column_name='quantity_cust_request_tn',
-                        max_z_lag=self.dataset_generation["max_z_lag_periods"],
-                        z_anchored_delta_lag_periods=self.dataset_generation["z_anchored_delta_lag_periods"]
+                        max_z_lag=self.dataset["max_z_lag_periods"],
+                        z_anchored_delta_lag_periods=self.dataset["z_anchored_delta_lag_periods"]
                     )},
                     {self._generate_anchored_delta_features_on_zlag_columns(
                         base_column_name='quantity_tn',
-                        max_z_lag=self.dataset_generation["max_z_lag_periods"],
-                        z_anchored_delta_lag_periods=self.dataset_generation["z_anchored_delta_lag_periods"]
+                        max_z_lag=self.dataset["max_z_lag_periods"],
+                        z_anchored_delta_lag_periods=self.dataset["z_anchored_delta_lag_periods"]
                     )},
                     {self._generate_anchored_delta_features_on_zlag_columns(
                         base_column_name='quantity_stock_final',
-                        max_z_lag=self.dataset_generation["max_z_lag_periods"],
-                        z_anchored_delta_lag_periods=self.dataset_generation["z_anchored_delta_lag_periods"]
+                        max_z_lag=self.dataset["max_z_lag_periods"],
+                        z_anchored_delta_lag_periods=self.dataset["z_anchored_delta_lag_periods"]
                     )},
 
                     -- Adjacent Delta Z-lag
                     {self._generate_adjacent_delta_features_on_zlag_columns(
                         base_column_name='quantity_cust_request_qty',
-                        max_z_lag=self.dataset_generation["max_z_lag_periods"],
-                        z_adjacent_delta_lag_periods=self.dataset_generation["z_adjacent_delta_lag_periods"]
+                        max_z_lag=self.dataset["max_z_lag_periods"],
+                        z_adjacent_delta_lag_periods=self.dataset["z_adjacent_delta_lag_periods"]
                     )},
                     {self._generate_adjacent_delta_features_on_zlag_columns(
                         base_column_name='quantity_cust_request_tn',
-                        max_z_lag=self.dataset_generation["max_z_lag_periods"],
-                        z_adjacent_delta_lag_periods=self.dataset_generation["z_adjacent_delta_lag_periods"]
+                        max_z_lag=self.dataset["max_z_lag_periods"],
+                        z_adjacent_delta_lag_periods=self.dataset["z_adjacent_delta_lag_periods"]
                     )},
                     {self._generate_adjacent_delta_features_on_zlag_columns(
                         base_column_name='quantity_tn',
-                        max_z_lag=self.dataset_generation["max_z_lag_periods"],
-                        z_adjacent_delta_lag_periods=self.dataset_generation["z_adjacent_delta_lag_periods"]
+                        max_z_lag=self.dataset["max_z_lag_periods"],
+                        z_adjacent_delta_lag_periods=self.dataset["z_adjacent_delta_lag_periods"]
                     )},
                     {self._generate_adjacent_delta_features_on_zlag_columns(
                         base_column_name='quantity_stock_final',
-                        max_z_lag=self.dataset_generation["max_z_lag_periods"],
-                        z_adjacent_delta_lag_periods=self.dataset_generation["z_adjacent_delta_lag_periods"]
+                        max_z_lag=self.dataset["max_z_lag_periods"],
+                        z_adjacent_delta_lag_periods=self.dataset["z_adjacent_delta_lag_periods"]
                     )},
 
                     -- Anchored Z-lag ratios
                     {self._generate_anchored_ratio_features_on_zlag_columns(
                         base_column_name='quantity_cust_request_qty',
-                        max_z_lag=self.dataset_generation["max_z_lag_periods"],
-                        z_anchored_ratio_lag_periods=self.dataset_generation["z_anchored_ratio_lag_periods"]
+                        max_z_lag=self.dataset["max_z_lag_periods"],
+                        z_anchored_ratio_lag_periods=self.dataset["z_anchored_ratio_lag_periods"]
                     )},
                     {self._generate_anchored_ratio_features_on_zlag_columns(
                         base_column_name='quantity_cust_request_tn',
-                        max_z_lag=self.dataset_generation["max_z_lag_periods"],
-                        z_anchored_ratio_lag_periods=self.dataset_generation["z_anchored_ratio_lag_periods"]
+                        max_z_lag=self.dataset["max_z_lag_periods"],
+                        z_anchored_ratio_lag_periods=self.dataset["z_anchored_ratio_lag_periods"]
                     )},
                     {self._generate_anchored_ratio_features_on_zlag_columns(
                         base_column_name='quantity_tn',
-                        max_z_lag=self.dataset_generation["max_z_lag_periods"],
-                        z_anchored_ratio_lag_periods=self.dataset_generation["z_anchored_ratio_lag_periods"]
+                        max_z_lag=self.dataset["max_z_lag_periods"],
+                        z_anchored_ratio_lag_periods=self.dataset["z_anchored_ratio_lag_periods"]
                     )},
                     {self._generate_anchored_ratio_features_on_zlag_columns(
                         base_column_name='quantity_stock_final',
-                        max_z_lag=self.dataset_generation["max_z_lag_periods"],
-                        z_anchored_ratio_lag_periods=self.dataset_generation["z_anchored_ratio_lag_periods"]
+                        max_z_lag=self.dataset["max_z_lag_periods"],
+                        z_anchored_ratio_lag_periods=self.dataset["z_anchored_ratio_lag_periods"]
                     )},
 
                     -- Adjacent Z-lag ratios
                     {self._generate_adjacent_ratio_features_on_zlag_columns(
                         base_column_name='quantity_cust_request_qty',
-                        max_z_lag=self.dataset_generation["max_z_lag_periods"],
-                        z_adjacent_ratio_lag_periods=self.dataset_generation["z_adjacent_ratio_lag_periods"]
+                        max_z_lag=self.dataset["max_z_lag_periods"],
+                        z_adjacent_ratio_lag_periods=self.dataset["z_adjacent_ratio_lag_periods"]
                     )},
                     {self._generate_adjacent_ratio_features_on_zlag_columns(
                         base_column_name='quantity_cust_request_tn',
-                        max_z_lag=self.dataset_generation["max_z_lag_periods"],
-                        z_adjacent_ratio_lag_periods=self.dataset_generation["z_adjacent_ratio_lag_periods"]
+                        max_z_lag=self.dataset["max_z_lag_periods"],
+                        z_adjacent_ratio_lag_periods=self.dataset["z_adjacent_ratio_lag_periods"]
                     )},
                     {self._generate_adjacent_ratio_features_on_zlag_columns(
                         base_column_name='quantity_tn',
-                        max_z_lag=self.dataset_generation["max_z_lag_periods"],
-                        z_adjacent_ratio_lag_periods=self.dataset_generation["z_adjacent_ratio_lag_periods"]
+                        max_z_lag=self.dataset["max_z_lag_periods"],
+                        z_adjacent_ratio_lag_periods=self.dataset["z_adjacent_ratio_lag_periods"]
                     )},
                     {self._generate_adjacent_ratio_features_on_zlag_columns(
                         base_column_name='quantity_stock_final',
-                        max_z_lag=self.dataset_generation["max_z_lag_periods"],
-                        z_adjacent_ratio_lag_periods=self.dataset_generation["z_adjacent_ratio_lag_periods"]
+                        max_z_lag=self.dataset["max_z_lag_periods"],
+                        z_adjacent_ratio_lag_periods=self.dataset["z_adjacent_ratio_lag_periods"]
                     )},
 
                     -- Z-lag regression slopes
                     {self._generate_regression_slopes_on_zlag_columns(
                         base_column_name='quantity_cust_request_qty',
-                        max_z_lag=self.dataset_generation["max_z_lag_periods"],
-                        z_regression_slopes_window_sizes=self.dataset_generation["z_adjacent_ratio_lag_periods"]
+                        max_z_lag=self.dataset["max_z_lag_periods"],
+                        z_regression_slopes_window_sizes=self.dataset["z_adjacent_ratio_lag_periods"]
                     )},
                     {self._generate_regression_slopes_on_zlag_columns(
                         base_column_name='quantity_cust_request_tn',
-                        max_z_lag=self.dataset_generation["max_z_lag_periods"],
-                        z_regression_slopes_window_sizes=self.dataset_generation["z_adjacent_ratio_lag_periods"]
+                        max_z_lag=self.dataset["max_z_lag_periods"],
+                        z_regression_slopes_window_sizes=self.dataset["z_adjacent_ratio_lag_periods"]
                     )},
                     {self._generate_regression_slopes_on_zlag_columns(
                         base_column_name='quantity_tn',
-                        max_z_lag=self.dataset_generation["max_z_lag_periods"],
-                        z_regression_slopes_window_sizes=self.dataset_generation["z_adjacent_ratio_lag_periods"]
+                        max_z_lag=self.dataset["max_z_lag_periods"],
+                        z_regression_slopes_window_sizes=self.dataset["z_adjacent_ratio_lag_periods"]
                     )},
                     {self._generate_regression_slopes_on_zlag_columns(
                         base_column_name='quantity_stock_final',
-                        max_z_lag=self.dataset_generation["max_z_lag_periods"],
-                        z_regression_slopes_window_sizes=self.dataset_generation["z_adjacent_ratio_lag_periods"]
+                        max_z_lag=self.dataset["max_z_lag_periods"],
+                        z_regression_slopes_window_sizes=self.dataset["z_adjacent_ratio_lag_periods"]
                     )},
 
                 FROM fixed_standardized_lag_series
+                WHERE ps.periodo >= {self.dataset["min_periodo"]}  -- Only {self.dataset["min_periodo"]} and onwards
                 ORDER BY product_id, customer_id, periodo
             );             
             """)
@@ -1444,16 +1498,16 @@ class DatasetGenerator:
             temp_path = "/tmp/dataset.parquet"
             self.conn.execute(f"COPY dataset TO '{temp_path}' (FORMAT PARQUET)")
             
-            logger.info(f"Logging dataset to MLflow at {self.model_dataset['dataset_name']}...")
+            logger.info(f"Logging dataset to MLflow at {self.dataset['dataset_name']}...")
 
             mlflow.log_artifact(
                 temp_path,
-                artifact_path=self.model_dataset["dataset_name"]
+                artifact_path=self.dataset["dataset_name"]
             )
 
             os.remove(temp_path)
 
-            logger.info(f"Dataset generated and logged to MLflow at {self.model_dataset['dataset_name']}")
+            logger.info(f"Dataset generated and logged to MLflow at {self.dataset['dataset_name']}")
             
             # Log dataset metadata
             mlflow.log_param("dataset_len", str(self.conn.execute("SELECT COUNT(*) FROM dataset").fetchone()[0]))
