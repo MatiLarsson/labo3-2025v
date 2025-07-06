@@ -516,9 +516,13 @@ class DatasetGenerator:
         return ",\n".join(z_slope_clauses)
     
     @staticmethod
-    def _configure_duckdb_auto(conn):
+    def configure_duckdb_auto(conn, custom_thread_multiplier=None):
         """
         Configura DuckDB automáticamente usando el 80% de los recursos disponibles
+        
+        Args:
+            custom_thread_multiplier: Si se especifica, usa este multiplicador para threads.
+                                    Si es None, deja que DuckDB decida automáticamente.
         """
         # 1. Detectar RAM disponible (80% de la total)
         total_ram_gb = psutil.virtual_memory().total / (1024**3)
@@ -532,24 +536,34 @@ class DatasetGenerator:
         free_disk_gb = disk_usage.free / (1024**3)
         available_disk_gb = math.floor(free_disk_gb * 0.8)
         
-        # 3. Detectar CPUs (80% de los cores disponibles, mínimo 1)
+        # 3. Detectar CPUs
         total_cpus = os.cpu_count()
-        threads_to_use = round(total_cpus * 1.5)
         
-        # 4. Logging de la configuración detectada
+        # 4. Configurar threads (opcional)
+        if custom_thread_multiplier is not None:
+            threads_to_use = round(total_cpus * custom_thread_multiplier)
+            thread_config_msg = f"usando {threads_to_use} threads (manual: {custom_thread_multiplier}x)"
+        else:
+            threads_to_use = None
+            thread_config_msg = f"auto-detectado por DuckDB (~{total_cpus} threads)"
+        
+        # 5. Logging de la configuración detectada
         print(f"🔧 Auto-configurando DuckDB:")
         print(f"   💾 RAM total: {total_ram_gb:.1f} GB -> usando {available_ram_gb} GB")
         print(f"   💿 Disco libre: {free_disk_gb:.1f} GB -> usando {available_disk_gb} GB")
-        print(f"   🔄 CPUs: {total_cpus} -> usando {threads_to_use} threads")
+        print(f"   🔄 CPUs: {total_cpus} -> {thread_config_msg}")
         print(f"   📁 Directorio temporal: {temp_dir}")
         
-        # 5. Aplicar configuración
+        # 6. Aplicar configuración
         conn.execute(f"PRAGMA memory_limit='{available_ram_gb}GiB'")
         conn.execute(f"PRAGMA max_temp_directory_size='{available_disk_gb}GiB'")
         conn.execute(f"PRAGMA temp_directory='{temp_dir}'")
-        conn.execute(f"PRAGMA threads={threads_to_use}")
         
-        # 6. Configuraciones adicionales para optimización
+        # Solo configurar threads si se especifica manualmente
+        if threads_to_use is not None:
+            conn.execute(f"PRAGMA threads={threads_to_use}")
+        
+        # 7. Configuraciones adicionales para optimización
         conn.execute("PRAGMA enable_progress_bar=true")
         conn.execute("PRAGMA preserve_insertion_order=false")
         
@@ -558,7 +572,7 @@ class DatasetGenerator:
         return {
             'memory_limit_gb': available_ram_gb,
             'temp_directory_size_gb': available_disk_gb,
-            'threads': threads_to_use,
+            'threads': threads_to_use if threads_to_use else f"auto (~{total_cpus})",
             'temp_directory': temp_dir
         }
 
