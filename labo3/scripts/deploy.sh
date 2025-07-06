@@ -38,28 +38,22 @@ elif [ -f "$(git rev-parse --show-toplevel)/labo3/.env" ]; then
 fi
 
 # Overwrite .env with settings needed for GCP vms
-if [ -n "$ENV_FILE" ]; then
-    NODE0_IP=$(gcloud compute instances describe node0 --zone=$ZONE --format="value(networkInterfaces[0].accessConfigs[0].natIP)" 2>/dev/null || echo "")
-    cat > .env.gcp << GCP_ENV_EOF
+NODE0_IP=$(gcloud compute instances describe node0 --zone=$ZONE --format="value(networkInterfaces[0].accessConfigs[0].natIP)")
+cat > .env.gcp << GCP_ENV_EOF
 # MLflow tracking server (set by deploy.sh)
 MLFLOW_TRACKING_URI=http://$NODE0_IP:5000
-GOOGLE_APPLICATION_CREDENTIALS=""
 GCP_ENV_EOF
 
-    if [ -f "$ENV_FILE" ]; then
-        grep -v "^MLFLOW_TRACKING_URI=" "$ENV_FILE" | \
-        grep -v "^GOOGLE_APPLICATION_CREDENTIALS=" | \
-        grep -v "^#" | \
-        grep -v "^$" >> .env.gcp 2>/dev/null || true
-    fi
-
-    gsutil cp .env.gcp gs://$BUCKET_NAME/config/.env
-    rm -f .env.gcp
-    echo "✅ Environment configured with MLflow at $NODE0_IP:5000"
-else
-    NODE0_IP=$(gcloud compute instances describe node0 --zone=$ZONE --format="value(networkInterfaces[0].accessConfigs[0].natIP)" 2>/dev/null || echo "node0")
-    echo "MLFLOW_TRACKING_URI=http://$NODE0_IP:5000" | gsutil cp - gs://$BUCKET_NAME/config/.env
+if [ -f "$ENV_FILE" ]; then
+    grep -v "^MLFLOW_TRACKING_URI=" "$ENV_FILE" | \
+    grep -v "^GOOGLE_APPLICATION_CREDENTIALS=" | \
+    grep -v "^#" | \
+    grep -v "^$" >> .env.gcp 2>/dev/null || true
 fi
+
+gsutil cp .env.gcp gs://$BUCKET_NAME/config/.env
+rm -f .env.gcp
+echo "✅ Environment configured with MLflow at $NODE0_IP:5000"
 
 # Upload data files (only if they don't exist)
 yq '.paths.data_files[]' $CONFIG_FILE | while read file; do
