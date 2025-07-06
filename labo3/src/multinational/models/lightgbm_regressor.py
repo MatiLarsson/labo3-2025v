@@ -819,8 +819,12 @@ class LightGBMModel:
             compliant_count = len(kaggle_model_compliant)
             total_count = len(kaggle_to_predict)
             non_compliant_count = total_count - compliant_count
-            mlflow.log_metric("kaggle_compliant_proportion_of_rows", compliant_count / total_count if total_count > 0 else 0.0)
-            mlflow.log_metric("kaggle_non_compliant_proportion_of_rows", non_compliant_count / total_count if total_count > 0 else 0.0)
+            proportion_compliant_rows = compliant_count / total_count if total_count > 0 else 0.0
+            proportion_non_compliant_rows = non_compliant_count / total_count if total_count > 0 else 0.0
+            mlflow.log_metric("kaggle_compliant_proportion_of_rows", proportion_compliant_rows)
+            logger.info(f"Proportion of compliant rows: {proportion_compliant_rows:.4f} ({compliant_count}/{total_count})")
+            mlflow.log_metric("kaggle_non_compliant_proportion_of_rows", proportion_non_compliant_rows)
+            logger.info(f"Proportion of non-compliant rows: {proportion_non_compliant_rows:.4f} ({non_compliant_count}/{total_count})")
 
             # Log to mlflow the proportion of compliant quantity_tn_rolling_mean_11m out of total quantity_tn_rolling_mean_11m
             compliant_quantity_tn_rolling_mean_11m_sum = kaggle_model_compliant.select(
@@ -830,12 +834,16 @@ class LightGBMModel:
                 pl.col('quantity_tn_rolling_mean_11m').sum()
             ).item()
             non_compliant_quantity_tn_rolling_mean_11m_sum = total_quantity_tn_rolling_mean_11m_sum - compliant_quantity_tn_rolling_mean_11m_sum
-            mlflow.log_metric("kaggle_compliant_quantity_tn_rolling_mean_11m_proportion",
+            proportion_compliant_quantity_tn_rolling_mean_11m = (
                 compliant_quantity_tn_rolling_mean_11m_sum / total_quantity_tn_rolling_mean_11m_sum if total_quantity_tn_rolling_mean_11m_sum > 0 else 0.0
             )
-            mlflow.log_metric("kaggle_non_compliant_quantity_tn_rolling_mean_11m_proportion",
+            proportion_non_compliant_quantity_tn_rolling_mean_11m = (
                 non_compliant_quantity_tn_rolling_mean_11m_sum / total_quantity_tn_rolling_mean_11m_sum if total_quantity_tn_rolling_mean_11m_sum > 0 else 0.0
             )
+            mlflow.log_metric("kaggle_compliant_quantity_tn_rolling_mean_11m_proportion", proportion_compliant_quantity_tn_rolling_mean_11m)
+            logger.info(f"Proportion of compliant quantity_tn_rolling_mean_11m: {proportion_compliant_quantity_tn_rolling_mean_11m:.4f} ({compliant_quantity_tn_rolling_mean_11m_sum}/{total_quantity_tn_rolling_mean_11m_sum})")
+            mlflow.log_metric("kaggle_non_compliant_quantity_tn_rolling_mean_11m_proportion", proportion_non_compliant_quantity_tn_rolling_mean_11m)
+            logger.info(f"Proportion of non-compliant quantity_tn_rolling_mean_11m: {proportion_non_compliant_quantity_tn_rolling_mean_11m:.4f} ({non_compliant_quantity_tn_rolling_mean_11m_sum}/{total_quantity_tn_rolling_mean_11m_sum})")
 
             # Prepare predictions for model compliant rows
             kaggle_X = kaggle_model_compliant.drop([self.model_dataset["target"]]).to_numpy()

@@ -1,4 +1,4 @@
-experiment_name: "demand_forecasting_exp_7"
+experiment_name: "demand_forecasting_exp_8"
 
 gcp:
   project_id: "labo3-464122"
@@ -60,10 +60,10 @@ strategy:
   kaggle_month: 201912 # int
 
 testing_limits:
-  testing_mode: true
-  min_periodo: 201701
-  max_customers: 50
-  max_products: 20
+  testing_mode: false
+  min_periodo: 201701 # ignored if not in testing mode
+  max_customers: 50 # ignored if not in testing mode
+  max_products: 20 # ignored if not in testing mode
 
 cv:
   n_folds: 5
@@ -72,7 +72,7 @@ optimizer:
   study_name: "demand_forecasting_study"
   direction: "minimize"
   storage: null
-  n_trials: 10
+  n_trials: 30
 
   param_ranges:
     learning_rate: [0.01, 0.3]  # log scale
@@ -99,4 +99,4 @@ optimizer:
     metric: 'custom'
 
 final_train:
-  num_seeds: 10
+  num_seeds: 100
