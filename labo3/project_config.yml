@@ -17,7 +17,7 @@ jobs:
     instance_name: "worker"
     machine_type: "n2-highmem-64" # "n2-highmem-64" -> 64 CPU, 512GB RAM
     preemptible: true
-    boot_disk_size: "500GB"
+    boot_disk_size: "3000GB"
     boot_disk_type: "pd-ssd"  # type: pd-standard, pd-ssd, pd-balanced
 
 paths:
