@@ -144,7 +144,7 @@ class LightGBMModel:
                 .cast(pl.Int32)  # Convert boolean to int for cum_sum
                 .cum_sum()
                 .over(['customer_id', 'product_id'])
-                .ge(3)  # Convert to boolean flag (True if >= 3, False otherwise)
+                .ge(int(self.dataset["non_null_cherry_months"]))  # Convert to boolean flag (True if >= 3, False otherwise)
                 .cast(pl.Int32)  # Convert boolean to int (1/0)
                 .alias('cherry_flag')
             )
@@ -276,15 +276,30 @@ class LightGBMModel:
         
         # Filter datasets based on the defined periods, the cherry flag and the problematic standardization flag
         train_dataset = self.df.filter(pl.col(self.dataset["period"]) < self.strategy["test_month"]).filter(pl.col('cherry_flag') == 1).filter(pl.col('invalid_standardization_flag') == 0)
+        final_train_dataset = self.df.filter(pl.col(self.dataset["period"]) <= self.strategy["test_month"]).filter(pl.col('cherry_flag') == 1).filter(pl.col('invalid_standardization_flag') == 0)
         test_dataset = self.df.filter(pl.col(self.dataset["period"]) == self.strategy["test_month"]).filter(pl.col('cherry_flag') == 1).filter(pl.col('invalid_standardization_flag') == 0)
         self.kaggle_dataset = self.df.filter(pl.col(self.dataset["period"]) == self.strategy["kaggle_month"])
 
+        # Calculate target number of rows for final_train_dataset
+        target_rows = len(train_dataset) // self.cv["n_folds"] * (self.cv["n_folds"] - 1)
+
+        # Trim final_train_dataset by removing oldest periods
+        if len(final_train_dataset) > target_rows:
+            # Sort by period descending and take the newest rows
+            final_train_dataset = (
+                final_train_dataset
+                .sort(self.dataset["period"], descending=True)
+                .head(target_rows)
+            )
+
         # Store datasets info for MLflow logging
         self.train_size = len(train_dataset)
+        self.final_train_size = len(final_train_dataset)
         self.test_size = len(test_dataset)
         self.kaggle_size = len(self.kaggle_dataset)
 
         logger.info(f"Training dataset size: {self.train_size}")
+        logger.info(f"Final training dataset size: {self.final_train_size}")
         logger.info(f"Testing dataset size: {self.test_size}")
         logger.info(f"Kaggle dataset size: {self.kaggle_size}")
 
@@ -296,17 +311,31 @@ class LightGBMModel:
         self.global_std_values_train = train_dataset.select(pl.col('quantity_tn_cumulative_std')).to_numpy().flatten()
         self.global_std_values_test = test_dataset.select(pl.col('quantity_tn_cumulative_std')).to_numpy().flatten()
 
-        self.categorical_columns_idx = [train_dataset.drop('target').columns.index(col) for col in self.dataset["cat_features"]]
+        self.categorical_columns_idx = [final_train_dataset.drop('target').columns.index(col) for col in self.dataset["cat_features"]]
 
-        # Calculate sample weights
-        weight_lookup = (
+        # Calculate sample weights for taining dataset
+        weight_lookup_train = (
             train_dataset
             .group_by(['customer_id', 'product_id'])
             .agg(pl.col('quantity_tn').mean().alias('weight'))
         )
         self.sample_weight_train = (
             train_dataset
-            .join(weight_lookup, on=['customer_id', 'product_id'], how='left')
+            .join(weight_lookup_train, on=['customer_id', 'product_id'], how='left')
+            .select('weight')
+            .to_numpy()
+            .flatten()
+        )
+
+        # Calculate sample weights for final training dataset
+        weight_lookup_final_train = (
+            final_train_dataset
+            .group_by(['customer_id', 'product_id'])
+            .agg(pl.col('quantity_tn').mean().alias('weight'))
+        )
+        self.sample_weight_final_train = (
+            final_train_dataset
+            .join(weight_lookup_final_train, on=['customer_id', 'product_id'], how='left')
             .select('weight')
             .to_numpy()
             .flatten()
@@ -314,8 +343,10 @@ class LightGBMModel:
 
         self.X_train = train_dataset.drop([self.dataset["target"]]).to_numpy()
         self.X_test = test_dataset.drop([self.dataset["target"]]).to_numpy()
+        self.X_final_train = final_train_dataset.drop([self.dataset["target"]]).to_numpy()
         self.y_train = train_dataset.select(pl.col(self.dataset["target"])).to_numpy().flatten()
         self.y_test = test_dataset.select(pl.col(self.dataset["target"])).to_numpy().flatten()
+        self.y_final_train = final_train_dataset.select(pl.col(self.dataset["target"])).to_numpy().flatten()
 
         self._create_time_based_folds(train_dataset)
         self._get_fold_indices(train_dataset)
@@ -504,6 +535,7 @@ class LightGBMModel:
                 "experiment_name": self.experiment_name,
                 "train_size": self.train_size,
                 "test_size": self.test_size,
+                "final_train_size": self.final_train_size,
                 "kaggle_size": self.kaggle_size,
                 "test_month": self.strategy["test_month"],
                 "n_folds": self.cv["n_folds"],
@@ -599,10 +631,10 @@ class LightGBMModel:
         
         with mlflow.start_run(run_name="final_lightgbm_models", nested=True):
             # Create full training dataset
-            train_dataset = lgb.Dataset(
-                data=self.X_train,
-                label=self.y_train,
-                weight=self.sample_weight_train,
+            lgb_final_train_dataset = lgb.Dataset(
+                data=self.X_final_train,
+                label=self.y_final_train,
+                weight=self.sample_weight_final_train,
                 categorical_feature=self.categorical_columns_idx
             )
             
@@ -627,7 +659,7 @@ class LightGBMModel:
                     client = mlflow.tracking.MlflowClient()
                     
                     try:
-                        # Download and load the model (use seed, not i+1)
+                        # Download and load the model
                         model_path = client.download_artifacts(run_id, f"final_models/final_model_{i+1}.txt")
                         model = lgb.Booster(model_file=model_path)
                         logger.info(f"Loaded existing model {i+1}/{num_seeds} with seed: {seed}")
@@ -649,9 +681,9 @@ class LightGBMModel:
                             logger.info(f"Loaded existing feature importance for model {i+1}/{num_seeds} with seed: {seed}")
                             continue
                             
-                        except Exception as fe:
+                        except Exception as e:
                             # Model exists but feature importance doesn't - regenerate it
-                            logger.warning(f"Model {i+1}/{num_seeds} with {seed} exists but feature importance missing: {fe}")
+                            logger.warning(f"Model {i+1}/{num_seeds} with {seed} exists but feature importance missing: {e}")
                             logger.info(f"Regenerating feature importance for model {i+1}/{num_seeds} with {seed}")
                             
                             # Get feature importance from loaded model
@@ -687,15 +719,15 @@ class LightGBMModel:
                 logger.info(f"Training final model {i+1}/{num_seeds} with seed: {seed}")
                 
                 # Create a copy of params for this seed
-                current_params = self.final_params.copy()
-                current_params['seed'] = seed
-                current_params['bagging_seed'] = seed
-                current_params['feature_fraction_seed'] = seed
+                final_train_params = self.final_params.copy()
+                final_train_params['seed'] = seed
+                final_train_params['bagging_seed'] = seed
+                final_train_params['feature_fraction_seed'] = seed
 
                 # Train final model
                 model = lgb.train(
-                    params=current_params,
-                    train_set=train_dataset
+                    params=final_train_params,
+                    train_set=lgb_final_train_dataset
                 )
             
                 self.final_models.append(model)
@@ -728,7 +760,7 @@ class LightGBMModel:
                 # Log feature importance
                 mlflow.log_dict(sorted_importance_dict, f"feature_importance_{i+1}.json")
 
-                # Aggregate feature importance
+                # Aggregate feature importances
                 for feature, importance in importance_dict.items():
                     if feature not in self.aggregated_feature_importance:
                         self.aggregated_feature_importance[feature] = 0.0
