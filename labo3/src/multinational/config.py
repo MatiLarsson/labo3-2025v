@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 class ProjectConfig(BaseModel):
     experiment_name: str
-    dataset_generation: Dict[str, Any]  # Matches YAML structure
+    dataset: Dict[str, Any]  # Matches YAML structure
     strategy: Dict[str, Any]  # Strategy configuration
     gcp: Dict[str, Any]  # Configuration for Google Cloud Storage
     cv: Dict[str, Any]  # Cross-validation configuration
