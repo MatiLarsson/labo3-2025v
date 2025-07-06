@@ -19,7 +19,7 @@ REPO_URL=$(yq '.repository.url' $CONFIG_FILE)
 echo "🚀 Deploying ML job: $INSTANCE_NAME"
 
 # Push code
-git add . && git commit -m "Deploy $(date)" || true
+git add -A && git commit -m "Deploy $(date)" || true
 git push --set-upstream origin main 2>/dev/null || git push 2>/dev/null || echo "⚠️ Git push failed, continuing anyway"
 
 # Auth GCP
@@ -93,7 +93,9 @@ echo "Starting ML script in tmux..."
 tmux new-session -d -s ml || echo "⚠️ Failed to start tmux"
 tmux send-keys -t ml "git clone $REPO_URL repo && cd repo/labo3" Enter
 tmux send-keys -t ml "gsutil cp gs://$BUCKET_NAME/config/.env .env 2>/dev/null || echo 'No .env file found'" Enter
+tmux send-keys -t ml "echo 'Contents of .env file:' && cat .env" Enter
 tmux send-keys -t ml "python3 -m venv .venv && source .venv/bin/activate" Enter
+tmux send-keys -t ml "export \$(cat .env | xargs) && echo 'MLFLOW_TRACKING_URI=' \$MLFLOW_TRACKING_URI" Enter
 tmux send-keys -t ml "uv sync" Enter
 tmux send-keys -t ml "python scripts/$SCRIPT_NAME 2>&1 | tee run.log" Enter
 tmux send-keys -t ml "echo ML_SCRIPT_DONE > /tmp/ml_done" Enter

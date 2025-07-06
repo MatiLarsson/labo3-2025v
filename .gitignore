@@ -262,3 +262,8 @@ dist/
 **/dist/
 data/
 **/data/
+
+**/tmp/startup.sh
+tmp/startup.sh
+**tmp/
+tmp/
