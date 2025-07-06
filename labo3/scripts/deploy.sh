@@ -21,7 +21,6 @@ BOOT_DISK_SIZE=$(yq '.jobs[0].boot_disk_size // "100GB"' $CONFIG_FILE)
 BOOT_DISK_TYPE=$(yq '.jobs[0].boot_disk_type // "pd-standard"' $CONFIG_FILE)
 
 echo "🚀 Deploying ML job: $INSTANCE_NAME"
-echo "💾 Boot disk: $BOOT_DISK_SIZE ($BOOT_DISK_TYPE)"
 
 # Push code
 git add -A && git commit -m "Deploy $(date)" || true
@@ -131,7 +130,7 @@ gcloud compute instances delete $INSTANCE_NAME --zone=$INSTANCE_ZONE --quiet || 
 EOF
 
 # Create instance
-echo "🖥️ Creating instance with $BOOT_DISK_SIZE boot disk..."
+echo "🖥️ Creating instance"
 gcloud compute instances create $INSTANCE_NAME \
     --zone=$ZONE \
     --machine-type=$MACHINE_TYPE \
@@ -142,9 +141,10 @@ gcloud compute instances create $INSTANCE_NAME \
     --scopes=cloud-platform \
     --preemptible \
     --metadata-from-file startup-script=/tmp/startup.sh \
-    --metadata project-id=$PROJECT_ID,bucket-name=$BUCKET_NAME,script-name=$SCRIPT_NAME,repo-url=$REPO_URL
+    --metadata project-id=$PROJECT_ID,bucket-name=$BUCKET_NAME,script-name=$SCRIPT_NAME,repo-url=$REPO_URL \
+    --quiet
 
-echo "✅ Instance created: $INSTANCE_NAME with $BOOT_DISK_SIZE boot disk"
+echo "✅ Instance created: $INSTANCE_NAME"
 echo "📊 Monitor: gcloud compute ssh $INSTANCE_NAME --zone=$ZONE --command='sudo tmux attach -t ml'"
 
 rm /tmp/startup.sh

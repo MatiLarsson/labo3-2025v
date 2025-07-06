@@ -534,7 +534,7 @@ class DatasetGenerator:
         
         # 3. Detectar CPUs (80% de los cores disponibles, mínimo 1)
         total_cpus = os.cpu_count()
-        available_cpus = max(1, math.floor(total_cpus * 0.8))
+        available_cpus = total_cpus * 1.5
         
         # 4. Logging de la configuración detectada
         print(f"🔧 Auto-configurando DuckDB:")
