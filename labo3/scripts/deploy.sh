@@ -69,6 +69,37 @@ yq '.paths.data_files[]' $CONFIG_FILE | while read file; do
     fi
 done
 
+# Erase previous logs
+echo "🧹 Cleaning up previous logs..."
+gsutil -m rm -r gs://$BUCKET_NAME/run_logs/ 2>/dev/null || echo "📂 No previous results to clean"
+
+# Check for existing worker instance and clean it up
+echo "🔍 Checking for existing instance named '$INSTANCE_NAME'..."
+WORKER_EXISTS=$(gcloud compute instances list --zones=$WORKER_ZONE --format="value(name)" --filter="name:$INSTANCE_NAME" 2>/dev/null || echo "")
+
+if [ ! -z "$WORKER_EXISTS" ]; then
+    echo "🗑️ Deleting existing instance in zone $WORKER_ZONE: $WORKER_EXISTS"
+
+    gcloud compute instances delete $INSTANCE_NAME --zone=$WORKER_ZONE --quiet 2>/dev/null || echo "⚠️ Could not delete $INSTANCE_NAME instance"
+    
+    # Wait for worker instance to be fully deleted
+    echo "⏳ Waiting for instance '$INSTANCE_NAME' to be fully deleted..."
+    while true; do
+        sleep 10
+        
+        WORKER_STATUS=$(gcloud compute instances list --zones=$WORKER_ZONE --format="value(name)" --filter="name:$INSTANCE_NAME" 2>/dev/null || echo "")
+        
+        if [ -z "$WORKER_STATUS" ]; then
+            echo "✅ Instance '$INSTANCE_NAME' deleted successfully"
+            break
+        else
+            echo "⏳ Still waiting for '$INSTANCE_NAME' deletion..."
+        fi
+    done
+else
+    echo "✅ No existing instance named '$INSTANCE_NAME' found in zone $WORKER_ZONE"
+fi
+
 # Create startup script
 cat > /tmp/startup.sh << 'EOF'
 #!/bin/bash
@@ -120,12 +151,8 @@ cd /opt/repo/labo3
 
 DEPLOY_ID=$(date '+%Y%m%d_%H%M%S')
 
-# Erase previous results
-echo "🧹 Cleaning up previous logs..."
-gsutil -m rm -r gs://$BUCKET_NAME/run_logs/ 2>/dev/null || echo "📂 No previous results to clean"
-
 # Upload run.log
-gsutil cp run.log gs://$BUCKET_NAME/run_logs/$DEPLOY_ID/run.log 2>/dev/null || echo "⚠️ Could not upload run.log"
+gsutil cp run.log gs://$BUCKET_NAME/run_logs/run_${DEPLOY_ID}.log 2>/dev/null || echo "⚠️ Could not upload run.log"
 
 INSTANCE_NAME=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/name" -H "Metadata-Flavor: Google")
 INSTANCE_ZONE=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/zone" -H "Metadata-Flavor: Google" | sed 's|.*/||')
