@@ -10,7 +10,8 @@ CONFIG_FILE="project_config.yml"
 # Parse config
 PROJECT_ID=$(yq '.gcp.project_id' $CONFIG_FILE)
 BUCKET_NAME=$(yq '.gcp.bucket_name' $CONFIG_FILE)
-ZONE=$(yq '.gcp.zone' $CONFIG_FILE)
+NODE0_ZONE=$(yq '.gcp.node0_zone' $CONFIG_FILE)
+WORKER_ZONE=$(yq '.gcp.worker_zone' $CONFIG_FILE)
 SCRIPT_NAME=$(yq '.jobs[0].script' $CONFIG_FILE)
 INSTANCE_NAME=$(yq '.jobs[0].instance_name' $CONFIG_FILE)
 MACHINE_TYPE=$(yq '.jobs[0].machine_type' $CONFIG_FILE)
@@ -42,7 +43,7 @@ elif [ -f "$(git rev-parse --show-toplevel)/labo3/.env" ]; then
 fi
 
 # Overwrite .env with settings needed for GCP vms
-NODE0_IP=$(gcloud compute instances describe node0 --zone=$ZONE --format="value(networkInterfaces[0].accessConfigs[0].natIP)")
+NODE0_IP=$(gcloud compute instances describe node0 --zone=$NODE0_ZONE --format="value(networkInterfaces[0].accessConfigs[0].natIP)")
 cat > .env.gcp << GCP_ENV_EOF
 # MLflow tracking server (set by deploy.sh)
 MLFLOW_TRACKING_URI=http://$NODE0_IP:5000
@@ -136,7 +137,7 @@ EOF
 # Create instance
 echo "🖥️ Creating instance"
 gcloud compute instances create $INSTANCE_NAME \
-    --zone=$ZONE \
+    --zone=$WORKER_ZONE \
     --machine-type=$MACHINE_TYPE \
     --image-family=ubuntu-2204-lts \
     --image-project=ubuntu-os-cloud \
@@ -150,7 +151,7 @@ gcloud compute instances create $INSTANCE_NAME \
 
 if [ ${PIPESTATUS[0]} -eq 0 ]; then
     echo "✅ Instance created successfully"
-    echo "📊 Monitor: gcloud compute ssh $INSTANCE_NAME --zone=$ZONE --command='sudo tmux attach -t ml'"
+    echo "📊 Monitor: gcloud compute ssh $INSTANCE_NAME --zone=$WORKER_ZONE --command='sudo tmux attach -t ml'"
 else
     echo "❌ Instance creation failed"
     exit 1
