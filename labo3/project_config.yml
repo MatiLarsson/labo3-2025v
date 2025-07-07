@@ -18,8 +18,8 @@ jobs:
   instance_name: "worker"
   machine_type: "n2-highmem-64" # "n2-highmem-64" -> 64 CPU, 512GB RAM
   preemptible: true
-  boot_disk_size: "4000GB"
-  boot_disk_type: "pd-standard"  # type: pd-standard, pd-ssd, pd-balanced
+  boot_disk_size: "2000GB"
+  boot_disk_type: "pd-ssd"  # type: pd-standard, pd-ssd, pd-balanced
 
 paths:
   data_files:
@@ -75,17 +75,17 @@ optimizer:
 
   param_ranges:
     learning_rate: [0.01, 0.1]  # log scale
-    num_leaves: [10, 300]  # int
-    max_depth: [3, 25]  # int
+    num_leaves: [200, 800]  # int
+    max_depth: [10, 25]  # int
     min_data_in_leaf: [2000, 8000]  # int
     min_sum_hessian_in_leaf: [0.001, 1.0]  # log scale
-    bagging_fraction: [0.6, 1.0]  # float
+    bagging_fraction: [0.7, 1.0]  # float
     bagging_freq: [3, 7]  # int
-    feature_fraction: [0.6, 1.0]  # float
+    feature_fraction: [0.7, 1.0]  # float
     lambda_l1: [0.001, 1.0]  # log scale
     lambda_l2: [0.001, 1.0]  # log scale
     linear_lambda: [0.001, 1.0]  # log scale
-    max_bin: [100, 500]  # int
+    max_bin: [200, 500]  # int
 
   base_model_params:
     objective: 'regression'

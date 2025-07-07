@@ -174,7 +174,7 @@ gcloud compute instances create $INSTANCE_NAME \
     --preemptible \
     --metadata-from-file startup-script=/tmp/startup.sh \
     --metadata project-id=$PROJECT_ID,bucket-name=$BUCKET_NAME,script-name=$SCRIPT_NAME,repo-url=$REPO_URL \
-    2>&1 | grep -v "Disk size.*is larger than image size" | grep -v "You might need to resize"
+    2>&1 | grep -v "WARNING:" | grep -v "Some requests generated warnings:" | grep -v "Disk size.*is larger than image size" | grep -v "You might need to resize"
 
 if [ ${PIPESTATUS[0]} -eq 0 ]; then
     echo "✅ Instance created successfully"
