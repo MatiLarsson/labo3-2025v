@@ -3,7 +3,7 @@ experiment_name: "demand_forecasting_exp_10"
 gcp:
   project_id: "labo3-464122"
   bucket_name: "labo3_bucket"
-  zone: "us-east1-d"
+  zone: "us-east1-c" # a, b, c, d, e
   region: "us-east1"
   blob_path: "data"
 
