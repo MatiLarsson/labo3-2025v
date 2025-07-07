@@ -12,14 +12,14 @@ PROJECT_ID=$(yq '.gcp.project_id' $CONFIG_FILE)
 BUCKET_NAME=$(yq '.gcp.bucket_name' $CONFIG_FILE)
 NODE0_ZONE=$(yq '.gcp.node0_zone' $CONFIG_FILE)
 WORKER_ZONE=$(yq '.gcp.worker_zone' $CONFIG_FILE)
-SCRIPT_NAME=$(yq '.jobs[0].script' $CONFIG_FILE)
-INSTANCE_NAME=$(yq '.jobs[0].instance_name' $CONFIG_FILE)
-MACHINE_TYPE=$(yq '.jobs[0].machine_type' $CONFIG_FILE)
+SCRIPT_NAME=$(yq '.jobs.script' $CONFIG_FILE)
+INSTANCE_NAME=$(yq '.jobs.instance_name' $CONFIG_FILE)
+MACHINE_TYPE=$(yq '.jobs.machine_type' $CONFIG_FILE)
 REPO_URL=$(yq '.repository.url' $CONFIG_FILE)
 
 # Parse disk configuration
-BOOT_DISK_SIZE=$(yq '.jobs[0].boot_disk_size // "100GB"' $CONFIG_FILE)
-BOOT_DISK_TYPE=$(yq '.jobs[0].boot_disk_type // "pd-standard"' $CONFIG_FILE)
+BOOT_DISK_SIZE=$(yq '.jobs.boot_disk_size // "100GB"' $CONFIG_FILE)
+BOOT_DISK_TYPE=$(yq '.jobs.boot_disk_type // "pd-standard"' $CONFIG_FILE)
 
 echo "🚀 Deploying ML job: $INSTANCE_NAME"
 
@@ -86,7 +86,7 @@ if [ ! -z "$WORKER_EXISTS" ]; then
     echo "⏳ Waiting for instance '$INSTANCE_NAME' to be fully deleted..."
     while true; do
         sleep 10
-        
+
         WORKER_STATUS=$(gcloud compute instances list --zones=$WORKER_ZONE --format="value(name)" --filter="name:$INSTANCE_NAME" 2>/dev/null || echo "")
         
         if [ -z "$WORKER_STATUS" ]; then
