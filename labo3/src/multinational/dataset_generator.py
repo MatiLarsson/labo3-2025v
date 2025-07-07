@@ -526,7 +526,7 @@ class DatasetGenerator:
         """
         # 1. Detectar RAM disponible (80% de la total)
         total_ram_gb = psutil.virtual_memory().total / (1024**3)
-        available_ram_gb = math.floor(total_ram_gb * 0.95)
+        available_ram_gb = math.floor(total_ram_gb * 0.97)
         
         # 2. Detectar espacio en disco disponible (80% del espacio libre)
         temp_dir = '/tmp/duckdb_temp'
@@ -534,7 +534,7 @@ class DatasetGenerator:
         
         disk_usage = shutil.disk_usage(temp_dir)
         free_disk_gb = disk_usage.free / (1024**3)
-        available_disk_gb = math.floor(free_disk_gb * 0.95)
+        available_disk_gb = math.floor(free_disk_gb * 0.99)
         
         # 3. Detectar CPUs
         total_cpus = os.cpu_count()

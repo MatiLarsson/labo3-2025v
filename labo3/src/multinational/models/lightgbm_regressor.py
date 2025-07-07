@@ -144,7 +144,7 @@ class LightGBMModel:
                 .cast(pl.Int32)  # Convert boolean to int for cum_sum
                 .cum_sum()
                 .over(['customer_id', 'product_id'])
-                .ge(int(self.dataset["non_null_cherry_months"]))  # Convert to boolean flag (True if >= 3, False otherwise)
+                .ge(int(self.dataset["positive_quantity_tn_cherry_months"]))  # Convert to boolean flag (True if >= 3, False otherwise)
                 .cast(pl.Int32)  # Convert boolean to int (1/0)
                 .alias('cherry_flag')
             )
