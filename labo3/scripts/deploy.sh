@@ -1,5 +1,5 @@
 #!/bin/bash
-# deploy.sh - Simple ML job deployment
+# deploy.sh - Simple ML job deployment with preemption handling
 
 set -e
 
@@ -100,7 +100,7 @@ else
     echo "✅ No existing instance named '$INSTANCE_NAME' found in zone $WORKER_ZONE"
 fi
 
-# Create startup script
+# Create startup script with preemption handling
 cat > /tmp/startup.sh << 'EOF'
 #!/bin/bash
 set -e
@@ -127,6 +127,61 @@ REPO_URL=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/
 
 gcloud config set project $PROJECT_ID --quiet
 
+# Create cleanup function that uploads logs
+cleanup_and_upload() {
+    echo "🚨 Cleanup triggered - uploading logs before shutdown..."
+    
+    cd /opt/repo/labo3 2>/dev/null || cd /opt
+    
+    DEPLOY_ID=$(date '+%Y%m%d_%H%M%S')
+    INSTANCE_NAME=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/name" -H "Metadata-Flavor: Google")
+    
+    # Upload run.log if it exists
+    if [ -f "run.log" ]; then
+        gsutil cp run.log gs://$BUCKET_NAME/run_logs/run_${DEPLOY_ID}_interrupted.log 2>/dev/null || echo "⚠️ Could not upload run.log"
+        echo "✅ Uploaded interrupted run log"
+    fi
+    
+    # Upload any other relevant files
+    if [ -f "error.log" ]; then
+        gsutil cp error.log gs://$BUCKET_NAME/run_logs/error_${DEPLOY_ID}.log 2>/dev/null || echo "⚠️ Could not upload error.log"
+    fi
+    
+    # Create a status file indicating the job was interrupted
+    echo "Job interrupted at $(date) on instance $INSTANCE_NAME" > /tmp/interrupted_status.txt
+    gsutil cp /tmp/interrupted_status.txt gs://$BUCKET_NAME/run_logs/interrupted_${DEPLOY_ID}.txt 2>/dev/null || echo "⚠️ Could not upload status"
+    
+    echo "🔄 Cleanup completed"
+    exit 0
+}
+
+# Set up preemption monitoring in background
+monitor_preemption() {
+    while true; do
+        # Exit if main script completed successfully
+        if [ -f /tmp/ml_done ]; then
+            echo "🎯 Main script completed - stopping preemption monitor"
+            exit 0
+        fi
+        
+        # Check preemption notice every 5 seconds
+        if curl -s "http://metadata.google.internal/computeMetadata/v1/instance/preempted" -H "Metadata-Flavor: Google" | grep -q "TRUE"; then
+            echo "⚠️ PREEMPTION NOTICE RECEIVED - Starting cleanup..."
+            cleanup_and_upload
+            break
+        fi
+        sleep 5
+    done
+} &
+
+# Store the background process PID so we can clean it up later
+MONITOR_PID=$!
+
+# Also set up signal handlers for other shutdown scenarios
+trap cleanup_and_upload SIGTERM SIGINT SIGQUIT
+
+echo "🛡️ Preemption monitoring started"
+
 echo "Starting ML script in tmux..."
 tmux new-session -d -s ml || echo "⚠️ Failed to start tmux"
 tmux send-keys -t ml "git clone $REPO_URL repo && cd repo/labo3" Enter
@@ -136,23 +191,47 @@ tmux send-keys -t ml "python3 -m venv .venv && source .venv/bin/activate" Enter
 tmux send-keys -t ml "export \$(cat .env | xargs) && echo 'MLFLOW_TRACKING_URI=' \$MLFLOW_TRACKING_URI" Enter
 tmux send-keys -t ml "uv sync" Enter
 tmux send-keys -t ml "echo '💾 Final disk check before ML script:' && df -h /" Enter
-tmux send-keys -t ml "python scripts/$SCRIPT_NAME 2>&1 | tee run.log" Enter
+
+# Start the ML script with better error handling
+tmux send-keys -t ml "python scripts/$SCRIPT_NAME 2>&1 | tee run.log; echo \$? > /tmp/ml_exit_code" Enter
 tmux send-keys -t ml "echo ML_SCRIPT_DONE > /tmp/ml_done" Enter
 
 echo "Waiting for ML script to complete..."
 while [ ! -f /tmp/ml_done ]; do 
+    # Check if we're being preempted while waiting
+    if curl -s "http://metadata.google.internal/computeMetadata/v1/instance/preempted" -H "Metadata-Flavor: Google" | grep -q "TRUE"; then
+        echo "⚠️ PREEMPTION DURING EXECUTION - Starting cleanup..."
+        cleanup_and_upload
+        exit 0
+    fi
+    
     echo "Still waiting... $(date)"
     sleep 30
 done
 
 echo "ML script completed, uploading results..."
 
+# Clean up the background preemption monitor
+kill $MONITOR_PID 2>/dev/null || true
+
 cd /opt/repo/labo3
 
 DEPLOY_ID=$(date '+%Y%m%d_%H%M%S')
 
+# Check exit code
+EXIT_CODE=$(cat /tmp/ml_exit_code 2>/dev/null || echo "unknown")
+if [ "$EXIT_CODE" = "0" ]; then
+    LOG_SUFFIX="success"
+else
+    LOG_SUFFIX="error_${EXIT_CODE}"
+fi
+
 # Upload run.log
-gsutil cp run.log gs://$BUCKET_NAME/run_logs/run_${DEPLOY_ID}.log 2>/dev/null || echo "⚠️ Could not upload run.log"
+gsutil cp run.log gs://$BUCKET_NAME/run_logs/run_${DEPLOY_ID}_${LOG_SUFFIX}.log 2>/dev/null || echo "⚠️ Could not upload run.log"
+
+# Create completion status file
+echo "Job completed at $(date) with exit code $EXIT_CODE" > /tmp/completion_status.txt
+gsutil cp /tmp/completion_status.txt gs://$BUCKET_NAME/run_logs/completed_${DEPLOY_ID}.txt 2>/dev/null || echo "⚠️ Could not upload completion status"
 
 INSTANCE_NAME=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/name" -H "Metadata-Flavor: Google")
 INSTANCE_ZONE=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/zone" -H "Metadata-Flavor: Google" | sed 's|.*/||')
@@ -179,6 +258,7 @@ gcloud compute instances create $INSTANCE_NAME \
 if [ ${PIPESTATUS[0]} -eq 0 ]; then
     echo "✅ Instance created successfully"
     echo "📊 Monitor: gcloud compute ssh $INSTANCE_NAME --zone=$WORKER_ZONE --command='sudo tmux attach -t ml'"
+    echo "📁 Logs will be uploaded to gs://$BUCKET_NAME/run_logs/ even if preempted"
 else
     echo "❌ Instance creation failed"
     exit 1

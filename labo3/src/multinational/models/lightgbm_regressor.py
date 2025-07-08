@@ -337,17 +337,66 @@ class LightGBMModel:
 
     def prepare_features(self):
         """Complete feature preparation pipeline."""
-        logger.info("🔄 Starting feature preparation pipeline...")
+        with mlflow.start_run(run_name="features_preparation"):
+            # Check if a dataset already exists for this experiment in MLflow, if so, skip generation
+            existing_runs = mlflow.search_runs(
+                experiment_names=[self.experiment_name],
+                filter_string="tags.features_prepared_dataset_generated = 'true'",
+                max_results=1
+            )
 
-        self._load_data()
-        self._add_extra_features()
-        self._identify_features()
-        self._clip_extreme_values()
-        self._flag_cherry_rows()
-        self._flag_problematic_standardization()
-        self._encode_categorical_features()
+            if not existing_runs.empty:
+                logger.info("📂 Features prepared dataset already generated for this experiment. Skipping.")
 
-        logger.info("✅ Feature preparation pipeline completed.")
+                # Download features prepared dataset from MLflow storage
+                run_id = existing_runs.iloc[0]['run_id']
+                client = mlflow.tracking.MlflowClient()
+
+                logger.info(f"Downloading features prepared dataset from MLflow run {run_id}...")
+
+                local_path = client.download_artifacts(run_id, f"features_prepared_{self.dataset["dataset_name"]}")
+                
+                self.df = pl.read_parquet(local_path)
+                logger.info("✅ Features prepared dataset successfully loaded from storage.")
+
+                self._identify_features()
+
+                return
+            
+            logger.info("🔄 Starting feature preparation pipeline...")
+
+            self._load_data()
+            self._add_extra_features()
+            self._identify_features()
+            self._clip_extreme_values()
+            self._flag_cherry_rows()
+            self._flag_problematic_standardization()
+            self._encode_categorical_features()
+
+            # Log dataset with prepared features to MLflow
+            temp_path = "/tmp/features_prepared_dataset.parquet"
+            
+            self.df.write_parquet(temp_path)
+            
+            logger.info(f"Logging features prepared dataset to MLflow at features_prepared_{self.dataset["dataset_name"]}...")
+
+            mlflow.log_artifact(
+                temp_path,
+                artifact_path=f"features_prepared_{self.dataset["dataset_name"]}"
+            )
+
+            os.remove(temp_path)
+
+            logger.info(f"Dataset generated and logged to MLflow at {self.dataset['dataset_name']}")
+            
+            # Log dataset metadata
+            mlflow.log_param("features_prepared_dataset_len", str(self.df.shape[0]))
+            mlflow.log_param("features_prepared_dataset_columns", str(self.df.shape[1]))
+
+            # Tag the dataset as generated
+            mlflow.set_tag("features_prepared_dataset_generated", "true")
+
+            logger.info("✅ Feature preparation pipeline completed.")
 
     def _create_time_based_folds(self, train_dataset):
         """Create time-based folds for cross-validation."""
