@@ -15,6 +15,7 @@ import shutil
 from statsforecast import StatsForecast
 from statsforecast.models import AutoARIMA
 import pandas as pd
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from multinational.config import ProjectConfig
 from multinational.gcs_manager import GCSManager
@@ -98,13 +99,14 @@ class LightGBMModel:
                     sarima_df = (
                         self.df
                         .select(["periodo"] + lag_columns + ["quantity_tn"])
-                        .with_row_index("row_id")  # Add row index for unique_id
+                        .with_row_index("row_id")
                         .rename({
                             'quantity_tn': 'lag_0',
                             **{f'quantity_tn_lag_{i}': f'lag_{i}' for i in range(1, 12)}
                         })
-                        # Only fill null values, preserve NaN patterns for better modeling
-                        .fill_null(0.0)
+                        .with_columns([
+                            pl.col(f"lag_{i}").fill_null(0.0) for i in range(12)
+                        ])
                     )
 
                     # Melt to long format using Polars (vectorized operation)
@@ -117,32 +119,26 @@ class LightGBMModel:
                             value_name="y"
                         )
                         .with_columns([
-                            # Extract lag number
                             pl.col("lag").str.extract(r"lag_(\d+)").cast(pl.Int32).alias("lag_num"),
-                            # Calculate target year and month vectorized
                             (pl.col("periodo") // 100).alias("year"),
                             (pl.col("periodo") % 100).alias("month")
                         ])
                         .with_columns([
-                            # Calculate target month and year with proper handling of underflow
                             (pl.col("month") - pl.col("lag_num")).alias("target_month_raw"),
                             pl.col("year").alias("target_year")
                         ])
                         .with_columns([
-                            # Handle month underflow correctly for any negative value
                             pl.when(pl.col("target_month_raw") <= 0)
                             .then(((pl.col("target_month_raw") - 1) % 12) + 1)
                             .otherwise(pl.col("target_month_raw"))
                             .alias("target_month"),
                             
-                            # Handle year adjustment for multiple year underflow
                             pl.when(pl.col("target_month_raw") <= 0)
                             .then(pl.col("target_year") - ((-pl.col("target_month_raw")) // 12 + 1))
                             .otherwise(pl.col("target_year"))
                             .alias("target_year_final")
                         ])
                         .with_columns([
-                            # Create proper end-of-month dates using Polars date functions
                             pl.date(
                                 pl.col("target_year_final"),
                                 pl.col("target_month"),
@@ -150,11 +146,14 @@ class LightGBMModel:
                             )
                             .dt.month_end()
                             .alias("ds"),
-                            # Create unique_id
                             ("row_" + pl.col("row_id").cast(pl.Utf8)).alias("unique_id")
                         ])
                         .select(["unique_id", "ds", "y", "row_id", "lag_num"])
-                        .sort(["row_id", "lag_num"])  # Sort by row_id and lag for proper time series order
+                        .sort(["row_id", "lag_num"])
+                        # Fill nulls using Polars (multi-threaded)
+                        .with_columns([
+                            pl.col("y").fill_null(0.0).over("unique_id")
+                        ])
                     )
 
                     # Convert to pandas only once
@@ -162,22 +161,71 @@ class LightGBMModel:
                     
                     # Ensure datetime format is correct
                     forecast_df_pandas['ds'] = pd.to_datetime(forecast_df_pandas['ds'])
+
+                    logger.info(f"🚀 Starting parallel SARIMA fitting across {min(int(os.cpu_count()), len(forecast_df_pandas['unique_id'].unique()))} cores...")
+                
+                    def fit_predict_chunk(chunk_data):
+                        """Fit SARIMA model for a chunk of unique_ids"""
+                        try:
+                            chunk_df, chunk_id = chunk_data
+                            if len(chunk_df) == 0:
+                                return pd.DataFrame()
+                            
+                            sf_chunk = StatsForecast(
+                                models=[AutoARIMA(season_length=12)], 
+                                freq='ME'
+                            )
+                            sf_chunk.fit(chunk_df)
+                            predictions = sf_chunk.predict(h=2)
+                            
+                            logger.info(f"✅ Completed chunk {chunk_id} with {len(chunk_df['unique_id'].unique())} series")
+                            return predictions
+                            
+                        except Exception as e:
+                            logger.error(f"❌ Error in chunk {chunk_id}: {str(e)}")
+                            return pd.DataFrame()
                     
-                    forecast_df_pandas['y'] = (
-                        forecast_df_pandas
-                        .groupby('unique_id')['y']
-                        .transform(lambda x: x.fillna(0))
-                    )
+                    # Split unique_ids into chunks for parallel processing
+                    unique_ids = forecast_df_pandas['unique_id'].unique()
+                    n_chunks = min(int(os.cpu_count()), len(unique_ids))  # Use all cores or fewer if needed
+                    chunk_size = max(1, len(unique_ids) // n_chunks)
+                    
+                    chunks = []
+                    for i in range(0, len(unique_ids), chunk_size):
+                        chunk_ids = unique_ids[i:i + chunk_size]
+                        chunk_df = forecast_df_pandas[forecast_df_pandas['unique_id'].isin(chunk_ids)]
+                        chunks.append((chunk_df, i // chunk_size))
 
-                    # Fit model and predict
-                    sf = StatsForecast(models=[AutoARIMA(season_length=12)], freq='ME')
-                    sf.fit(forecast_df_pandas)
-                    predictions = sf.predict(h=2)
+                    logger.info(f"📊 Processing {len(unique_ids)} time series in {len(chunks)} parallel chunks")
 
-                    # Convert predictions back to Polars and join efficiently
+                    # Parallel processing with progress tracking
+                    predictions_list = []
+                    with ProcessPoolExecutor(max_workers=n_chunks) as executor:
+                        # Submit all jobs
+                        future_to_chunk = {executor.submit(fit_predict_chunk, chunk): i for i, chunk in enumerate(chunks)}
+                        
+                        # Collect results as they complete
+                        for future in as_completed(future_to_chunk):
+                            chunk_id = future_to_chunk[future]
+                            try:
+                                result = future.result()
+                                if len(result) > 0:
+                                    predictions_list.append(result)
+                            except Exception as e:
+                                logger.error(f"❌ Chunk {chunk_id} failed: {str(e)}")
+
+                    # Combine all predictions
+                    if predictions_list:
+                        predictions = pd.concat(predictions_list, ignore_index=True)
+                        logger.info(f"✅ Combined {len(predictions)} predictions from {len(predictions_list)} chunks")
+                    else:
+                        logger.error("❌ No predictions generated")
+                        return
+
+                    # Convert predictions back to Polars for fast joining
                     predictions_pl = pl.from_pandas(predictions).select(["unique_id", "AutoARIMA"])
 
-                    # Extract row_id from unique_id and join back to original data
+                    # Extract row_id and join back
                     predictions_mapped = (
                         predictions_pl
                         .with_columns(
@@ -193,11 +241,10 @@ class LightGBMModel:
                         .with_row_index("row_id")
                         .join(predictions_mapped, on="row_id", how="left")
                         .drop("row_id")
-                        .with_columns(
-                            pl.col("quantity_tn_predicted_sarima_12m")
-                            .cast(pl.Float64)
-                        )
-                        .with_columns(
+                        .with_columns([
+                            pl.col("quantity_tn_predicted_sarima_12m").cast(pl.Float64)
+                        ])
+                        .with_columns([
                             pl.when(
                                 pl.col("quantity_tn_cumulative_mean").is_not_nan() & 
                                 pl.col("quantity_tn_cumulative_std").is_not_nan() & 
@@ -208,10 +255,10 @@ class LightGBMModel:
                                 - pl.col("quantity_tn_standardized")
                             ).otherwise(pl.lit(None))
                             .alias("quantity_target_sarima_12m_prediction")
-                        )
+                        ])
                     )
 
-                    logger.info("✅ 12 month SARIMA predictions added successfully.")
+                    logger.info("✅ 12 month SARIMA predictions added successfully using parallel processing.")
                     
                 except Exception as e:
                     logger.error(f"❌ Error adding SARIMA features: {str(e)}")
