@@ -56,7 +56,7 @@ if [ -f "$ENV_FILE" ]; then
     grep -v "^$" >> .env.gcp 2>/dev/null || true
 fi
 
-gsutil cp .env.gcp gs://$BUCKET_NAME/config/.env
+gsutil cp .env.gcp gs://$BUCKET_NAME/config/.env 2>/dev/null || gsutil cp .env.gcp gs://$BUCKET_NAME/config/.env
 rm -f .env.gcp
 echo "✅ Environment configured with MLflow at $NODE0_IP:5000"
 
@@ -65,7 +65,7 @@ yq -r '.paths.data_files[]' $CONFIG_FILE | while IFS= read -r file; do
     if [ -n "$file" ] && [ "$file" != "null" ]; then
         if ! gsutil -q stat gs://$BUCKET_NAME/$file 2>/dev/null; then
             if [ -f "$file" ]; then
-                gsutil cp "$file" gs://$BUCKET_NAME/$file && echo "📤 Uploaded: $file"
+                gsutil cp "$file" gs://$BUCKET_NAME/$file 2>/dev/null && echo "📤 Uploaded: $file" || echo "⚠️ Upload failed: $file"
             else
                 echo "⚠️ File not found: $file"
             fi
