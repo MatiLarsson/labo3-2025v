@@ -19,7 +19,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from multinational.config import ProjectConfig
 from multinational.gcs_manager import GCSManager
-from multinational.utils import get_mlflow_tracking_uri, verify_mlflow_gcs_access, create_mlflow_experiment_if_not_exists
+from multinational.utils import get_mlflow_tracking_uri, verify_mlflow_gcs_access, create_mlflow_experiment_if_not_exists, fit_predict_sarima_chunk
 
 
 class LightGBMModel:
@@ -93,7 +93,7 @@ class LightGBMModel:
                 logger.info("➕ Adding 12m SARIMA predictions to the dataset...")
 
                 try:
-                    # Select lag columns and current value
+                    # Your existing Polars data preparation code...
                     lag_columns = [col for col in self.df.columns if col.startswith('quantity_tn_lag_') and int(col.split('_')[-1]) <= 11]
 
                     sarima_df = (
@@ -109,7 +109,7 @@ class LightGBMModel:
                         ])
                     )
 
-                    # Melt to long format using Polars (vectorized operation)
+                    # Melt and transform (your existing code)
                     forecast_df = (
                         sarima_df
                         .melt(
@@ -150,71 +150,74 @@ class LightGBMModel:
                         ])
                         .select(["unique_id", "ds", "y", "row_id", "lag_num"])
                         .sort(["row_id", "lag_num"])
-                        # Fill nulls using Polars (multi-threaded)
                         .with_columns([
                             pl.col("y").fill_null(0.0).over("unique_id")
                         ])
                     )
 
-                    # Convert to pandas only once
+                    # Convert to pandas only for StatsForecast
                     forecast_df_pandas = forecast_df.select(["unique_id", "ds", "y"]).to_pandas()
-                    
-                    # Ensure datetime format is correct
                     forecast_df_pandas['ds'] = pd.to_datetime(forecast_df_pandas['ds'])
 
-                    logger.info(f"🚀 Starting parallel SARIMA fitting across {min(int(os.cpu_count()), len(forecast_df_pandas['unique_id'].unique()))} cores...")
-                
-                    def fit_predict_chunk(chunk_data):
-                        """Fit SARIMA model for a chunk of unique_ids"""
-                        try:
-                            chunk_df, chunk_id = chunk_data
-                            if len(chunk_df) == 0:
-                                return pd.DataFrame()
-                            
-                            sf_chunk = StatsForecast(
-                                models=[AutoARIMA(season_length=12)], 
-                                freq='ME'
-                            )
-                            sf_chunk.fit(chunk_df)
-                            predictions = sf_chunk.predict(h=2)
-                            
-                            logger.info(f"✅ Completed chunk {chunk_id} with {len(chunk_df['unique_id'].unique())} series")
-                            return predictions
-                            
-                        except Exception as e:
-                            logger.error(f"❌ Error in chunk {chunk_id}: {str(e)}")
-                            return pd.DataFrame()
-                    
-                    # Split unique_ids into chunks for parallel processing
-                    unique_ids = forecast_df_pandas['unique_id'].unique()
-                    n_chunks = min(int(os.cpu_count()), len(unique_ids))  # Use all cores or fewer if needed
+                    logger.info(f"🚀 Starting optimized parallel SARIMA fitting...")
+
+                    # Get unique IDs using Polars
+                    unique_ids_pl = forecast_df.select("unique_id").unique().sort("unique_id")
+                    unique_ids = unique_ids_pl.to_pandas()['unique_id'].values
+
+                    n_chunks = min(os.cpu_count(), len(unique_ids))
                     chunk_size = max(1, len(unique_ids) // n_chunks)
                     
+                    # Prepare data for parallel processing (pure data, no class references)
                     chunks = []
-                    for i in range(0, len(unique_ids), chunk_size):
-                        chunk_ids = unique_ids[i:i + chunk_size]
-                        chunk_df = forecast_df_pandas[forecast_df_pandas['unique_id'].isin(chunk_ids)]
-                        chunks.append((chunk_df, i // chunk_size))
+                    for i in range(n_chunks):
+                        start_idx = i * chunk_size
+                        end_idx = min((i + 1) * chunk_size, len(unique_ids))
+                        
+                        if start_idx < len(unique_ids):
+                            chunk_unique_ids = unique_ids[start_idx:end_idx].tolist()
+                            
+                            # Use Polars filtering (orders of magnitude faster than pandas)
+                            chunk_df_pl = forecast_df.filter(
+                                pl.col("unique_id").is_in(chunk_unique_ids)
+                            )
+                            
+                            # Convert to pandas only for this specific chunk
+                            chunk_df = (
+                                chunk_df_pl
+                                .select(["unique_id", "ds", "y"])
+                                .to_pandas()
+                            )
+                            chunk_df['ds'] = pd.to_datetime(chunk_df['ds'])
+                            
+                            chunks.append((chunk_df, i))
+                            logger.info(f"✅ Prepared chunk {i}: {len(chunk_df)} rows, {len(chunk_unique_ids)} series")
+
+                    logger.info(f"🎯 All {len(chunks)} chunks prepared")
 
                     logger.info(f"📊 Processing {len(unique_ids)} time series in {len(chunks)} parallel chunks")
 
-                    # Parallel processing with progress tracking
+                    # Parallel processing with the external function
                     predictions_list = []
                     with ProcessPoolExecutor(max_workers=n_chunks) as executor:
-                        # Submit all jobs
-                        future_to_chunk = {executor.submit(fit_predict_chunk, chunk): i for i, chunk in enumerate(chunks)}
+                        # Submit all jobs using the module-level function
+                        future_to_chunk = {
+                            executor.submit(fit_predict_sarima_chunk, chunk): i 
+                            for i, chunk in enumerate(chunks)
+                        }
                         
-                        # Collect results as they complete
+                        # Collect results
                         for future in as_completed(future_to_chunk):
                             chunk_id = future_to_chunk[future]
                             try:
-                                result = future.result()
+                                result, returned_chunk_id = future.result()
                                 if len(result) > 0:
                                     predictions_list.append(result)
+                                    logger.info(f"✅ Completed chunk {returned_chunk_id}")
                             except Exception as e:
                                 logger.error(f"❌ Chunk {chunk_id} failed: {str(e)}")
 
-                    # Combine all predictions
+                    # Combine predictions and continue with your existing code
                     if predictions_list:
                         predictions = pd.concat(predictions_list, ignore_index=True)
                         logger.info(f"✅ Combined {len(predictions)} predictions from {len(predictions_list)} chunks")
@@ -222,10 +225,9 @@ class LightGBMModel:
                         logger.error("❌ No predictions generated")
                         return
 
-                    # Convert predictions back to Polars for fast joining
+                    # Rest of your existing code for joining back to self.df
                     predictions_pl = pl.from_pandas(predictions).select(["unique_id", "AutoARIMA"])
 
-                    # Extract row_id and join back
                     predictions_mapped = (
                         predictions_pl
                         .with_columns(
@@ -235,7 +237,6 @@ class LightGBMModel:
                         .rename({"AutoARIMA": "quantity_tn_predicted_sarima_12m"})
                     )
 
-                    # Add predictions to original dataframe
                     self.df = (
                         self.df
                         .with_row_index("row_id")
@@ -1171,9 +1172,54 @@ class LightGBMModel:
             mlflow.log_artifact(submission_path, artifact_path="kaggle_submission")
             logger.info(f"Kaggle submission file logged to MLflow: {submission_path}")
             
-            try:
-                os.remove(submission_path)
-            except OSError:
-                pass
-            
-            logger.info(f"✅ Kaggle submission completed successfully")
+            # Batch generate all multiplier files
+            logger.info("🚀 Batch generating 18 submission variants...")
+
+            multipliers = [round(x * 0.01, 2) for x in range(90, 100)] + [round(x * 0.01, 2) for x in range(101, 111)]
+
+            # Create all multiplied columns at once using Polars vectorization
+            multiplied_df = final_submission_df.with_columns([
+                (pl.col('tn') * multiplier).alias(f'tn_x{multiplier:.2f}'.replace('.', '_'))
+                for multiplier in multipliers
+            ])
+
+            # Write and log each variant
+            temp_files_to_cleanup = []
+
+            for multiplier in multipliers:
+                try:
+                    multiplier_str = f"{multiplier:.2f}".replace('.', '_')
+                    col_name = f'tn_x{multiplier_str}'
+                    
+                    # Select specific multiplied column
+                    variant_df = multiplied_df.select([
+                        'product_id',
+                        pl.col(col_name).alias('tn')
+                    ])
+                    
+                    # Write and log
+                    multiplier_filename = f"kaggle_submission_x{multiplier_str}.csv"
+                    multiplier_path = os.path.join(tempfile.gettempdir(), multiplier_filename)
+                    variant_df.write_csv(multiplier_path)
+                    
+                    artifact_path = f"kaggle_submission_multipliers/x{multiplier_str}"
+                    mlflow.log_artifact(multiplier_path, artifact_path=artifact_path)
+                    mlflow.log_metric(f"multiplier_{multiplier_str}", multiplier)
+                    
+                    temp_files_to_cleanup.append(multiplier_path)
+                    logger.info(f"✅ Logged variant {multiplier}")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Failed variant {multiplier}: {str(e)}")
+
+            # Cleanup all temp files
+            for temp_file in temp_files_to_cleanup + [submission_path]:
+                try:
+                    os.remove(temp_file)
+                except OSError:
+                    pass
+
+            # Summary metrics
+            mlflow.log_metric("total_submission_variants", len(multipliers) + 1)
+
+            logger.info(f"✅ All {len(multipliers) + 1} submission files logged to MLflow successfully!")

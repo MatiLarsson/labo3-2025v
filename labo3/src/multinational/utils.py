@@ -2,6 +2,9 @@ import os
 import requests
 from loguru import logger
 import mlflow
+import pandas as pd
+from statsforecast import StatsForecast
+from statsforecast.models import AutoARIMA
 
 
 def get_mlflow_tracking_uri():
@@ -79,3 +82,24 @@ def create_mlflow_experiment_if_not_exists(experiment_name, tracking_uri):
     except Exception as e:
         logger.error(f"❌ Failed to create MLflow experiment: {e}")
         raise
+
+def fit_predict_sarima_chunk(chunk_data):
+    """Fit SARIMA model for a chunk of unique_ids - MUST be at module level for pickling"""
+    try:
+        chunk_df, chunk_id = chunk_data
+        if len(chunk_df) == 0:
+            return pd.DataFrame(), chunk_id
+        
+        # Create fresh StatsForecast instance for this process
+        sf_chunk = StatsForecast(
+            models=[AutoARIMA(season_length=12)], 
+            freq='ME'
+        )
+        sf_chunk.fit(chunk_df)
+        predictions = sf_chunk.predict(h=2)
+        
+        return predictions, chunk_id
+        
+    except Exception as e:
+        print(f"❌ Error in chunk {chunk_id}: {str(e)}")  # Use print instead of logger
+        return pd.DataFrame(), chunk_id
