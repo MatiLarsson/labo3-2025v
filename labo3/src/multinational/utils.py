@@ -5,6 +5,7 @@ import mlflow
 import pandas as pd
 from statsforecast import StatsForecast
 from statsforecast.models import AutoARIMA
+import warnings
 
 
 def get_mlflow_tracking_uri():
@@ -90,13 +91,16 @@ def fit_predict_sarima_chunk(chunk_data):
         if len(chunk_df) == 0:
             return pd.DataFrame(), chunk_id
         
-        # Create fresh StatsForecast instance for this process
-        sf_chunk = StatsForecast(
-            models=[AutoARIMA(season_length=12)], 
-            freq='ME'
-        )
-        sf_chunk.fit(chunk_df)
-        predictions = sf_chunk.predict(h=2)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="divide by zero encountered in scalar divide")
+            warnings.filterwarnings("ignore", category=RuntimeWarning, module="statsforecast.arima")
+            
+            sf_chunk = StatsForecast(
+                models=[AutoARIMA(season_length=12)], 
+                freq='ME'
+            )
+            sf_chunk.fit(chunk_df)
+            predictions = sf_chunk.predict(h=2)
         
         return predictions, chunk_id
         
