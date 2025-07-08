@@ -91,335 +91,131 @@ class LightGBMModel:
             else:
                 logger.info("➕ Adding 12m SARIMA predictions to the dataset...")
 
-                # Select lag columns and current value
-                lag_columns = [col for col in self.df.columns if col.startswith('quantity_tn_z_lag_') and int(col.split('_')[-1]) <= 11]
+                try:
+                    # Select lag columns and current value
+                    lag_columns = [col for col in self.df.columns if col.startswith('quantity_tn_lag_') and int(col.split('_')[-1]) <= 11]
 
-                sarima_df = (
-                    self.df
-                    .select(["periodo"] + lag_columns + ["quantity_tn_standardized"])
-                    .with_row_index("row_id")  # Add row index for unique_id
-                    .rename({
-                        'quantity_tn_standardized': 'lag_0',
-                        **{f'quantity_tn_z_lag_{i}': f'lag_{i}' for i in range(1, 12)}
-                    })
-                    .fill_nan(0.0).fill_null(0.0)
-                )
-
-                # Melt to long format using Polars (vectorized operation)
-                forecast_df = (
-                    sarima_df
-                    .melt(
-                        id_vars=["row_id", "periodo"],
-                        value_vars=[f"lag_{i}" for i in range(12)],
-                        variable_name="lag",
-                        value_name="y"
-                    )
-                    .with_columns([
-                        # Extract lag number
-                        pl.col("lag").str.extract(r"lag_(\d+)").cast(pl.Int32).alias("lag_num"),
-                        # Calculate target year and month vectorized
-                        (pl.col("periodo") // 100).alias("year"),
-                        (pl.col("periodo") % 100).alias("month")
-                    ])
-                    .with_columns([
-                        # Calculate target month and year (vectorized)
-                        (pl.col("month") - pl.col("lag_num")).alias("target_month_raw"),
-                        pl.col("year").alias("target_year")
-                    ])
-                    .with_columns([
-                        # Handle month underflow
-                        pl.when(pl.col("target_month_raw") <= 0)
-                        .then(pl.col("target_month_raw") + 12)
-                        .otherwise(pl.col("target_month_raw"))
-                        .alias("target_month"),
-                        
-                        pl.when(pl.col("target_month_raw") <= 0)
-                        .then(pl.col("target_year") - 1)
-                        .otherwise(pl.col("target_year"))
-                        .alias("target_year_final")
-                    ])
-                    .with_columns([
-                        # Create date string for end of month
-                        pl.when(pl.col("target_month").is_in([1, 3, 5, 7, 8, 10, 12]))
-                        .then(pl.col("target_year_final").cast(pl.Utf8) + "-" + 
-                            pl.col("target_month").cast(pl.Utf8).str.zfill(2) + "-31")
-                        .when(pl.col("target_month").is_in([4, 6, 9, 11]))
-                        .then(pl.col("target_year_final").cast(pl.Utf8) + "-" + 
-                            pl.col("target_month").cast(pl.Utf8).str.zfill(2) + "-30")
-                        .when(pl.col("target_month") == 2)
-                        .then(
-                            pl.when((pl.col("target_year_final") % 4 == 0) & 
-                                ((pl.col("target_year_final") % 100 != 0) | (pl.col("target_year_final") % 400 == 0)))
-                            .then(pl.col("target_year_final").cast(pl.Utf8) + "-02-29")  # Leap year
-                            .otherwise(pl.col("target_year_final").cast(pl.Utf8) + "-02-28")  # Non-leap year
-                        )
-                        .alias("ds"),
-                        # Create unique_id
-                        ("row_" + pl.col("row_id").cast(pl.Utf8)).alias("unique_id")
-                    ])
-                    .select(["unique_id", "ds", "y", "row_id"])
-                    .sort(["row_id", "lag_num"])  # Sort by row_id and lag for proper time series order
-                )
-
-                # Convert to pandas only once
-                forecast_df_pandas = forecast_df.select(["unique_id", "ds", "y"]).to_pandas()
-                forecast_df_pandas['ds'] = pd.to_datetime(forecast_df_pandas['ds'])
-
-                # Fit model and predict
-                sf = StatsForecast(models=[AutoARIMA(season_length=12)], freq='ME')
-                sf.fit(forecast_df_pandas)
-                predictions = sf.predict(h=2)
-
-                # Convert predictions back to Polars and join efficiently
-                predictions_pl = pl.from_pandas(predictions).select(["unique_id", "AutoARIMA"])
-
-                # Extract row_id from unique_id and join back to original data
-                predictions_mapped = (
-                    predictions_pl
-                    .with_columns(
-                        pl.col("unique_id").str.extract(r"row_(\d+)").cast(pl.Int32).alias("row_id")
-                    )
-                    .select(["row_id", "AutoARIMA"])
-                    .rename({"AutoARIMA": "quantity_tn_standardized_predicted_sarima_12m"})
-                )
-
-                # Add predictions to original dataframe
-                self.df = (
-                    self.df
-                    .with_row_index("row_id")
-                    .join(predictions_mapped, on="row_id", how="left")
-                    .drop("row_id")
-                    .with_columns(
-                        pl.col("quantity_tn_standardized_predicted_sarima_12m")
-                        .cast(pl.Float64)
+                    sarima_df = (
+                        self.df
+                        .select(["periodo"] + lag_columns + ["quantity_tn"])
+                        .with_row_index("row_id")  # Add row index for unique_id
+                        .rename({
+                            'quantity_tn': 'lag_0',
+                            **{f'quantity_tn_lag_{i}': f'lag_{i}' for i in range(1, 12)}
+                        })
+                        # Only fill null values, preserve NaN patterns for better modeling
                         .fill_null(0.0)
-                        .fill_nan(0.0)
                     )
-                    .with_columns(
-                        (pl.col("quantity_tn_standardized") - pl.col("quantity_tn_standardized_predicted_sarima_12m"))
-                        .alias("quantity_sarima_12m_residual")
-                    )
-                )
 
-                logger.info("✅ 12 month SARIMA predictions added successfully.")
-
-        if eval(str(self.dataset["add_9m_sarima_features"])):
-            if int(self.dataset["max_z_lag_periods"]) < 8:
-                logger.warning("❗ Cannot add 9 month SARIMA features because max_z_lag_periods is less than 8. Skipping...")
-            else:
-                logger.info("➕ Adding 9m SARIMA predictions to the dataset...")
-
-                # Select lag columns and current value (0-8 months)
-                lag_columns = [col for col in self.df.columns if col.startswith('quantity_tn_z_lag_') and int(col.split('_')[-1]) <= 8]
-
-                sarima_df = (
-                    self.df
-                    .select(["periodo"] + lag_columns + ["quantity_tn_standardized"])
-                    .with_row_index("row_id")
-                    .rename({
-                        'quantity_tn_standardized': 'lag_0',
-                        **{f'quantity_tn_z_lag_{i}': f'lag_{i}' for i in range(1, 9)}
-                    })
-                    .fill_nan(0.0).fill_null(0.0)
-                )
-
-                # Melt to long format
-                forecast_df = (
-                    sarima_df
-                    .melt(
-                        id_vars=["row_id", "periodo"],
-                        value_vars=[f"lag_{i}" for i in range(9)],
-                        variable_name="lag",
-                        value_name="y"
-                    )
-                    .with_columns([
-                        pl.col("lag").str.extract(r"lag_(\d+)").cast(pl.Int32).alias("lag_num"),
-                        (pl.col("periodo") // 100).alias("year"),
-                        (pl.col("periodo") % 100).alias("month")
-                    ])
-                    .with_columns([
-                        (pl.col("month") - pl.col("lag_num")).alias("target_month_raw"),
-                        pl.col("year").alias("target_year")
-                    ])
-                    .with_columns([
-                        pl.when(pl.col("target_month_raw") <= 0)
-                        .then(pl.col("target_month_raw") + 12)
-                        .otherwise(pl.col("target_month_raw"))
-                        .alias("target_month"),
-                        
-                        pl.when(pl.col("target_month_raw") <= 0)
-                        .then(pl.col("target_year") - 1)
-                        .otherwise(pl.col("target_year"))
-                        .alias("target_year_final")
-                    ])
-                    .with_columns([
-                        # Create date string for end of month
-                        pl.when(pl.col("target_month").is_in([1, 3, 5, 7, 8, 10, 12]))
-                        .then(pl.col("target_year_final").cast(pl.Utf8) + "-" + 
-                            pl.col("target_month").cast(pl.Utf8).str.zfill(2) + "-31")
-                        .when(pl.col("target_month").is_in([4, 6, 9, 11]))
-                        .then(pl.col("target_year_final").cast(pl.Utf8) + "-" + 
-                            pl.col("target_month").cast(pl.Utf8).str.zfill(2) + "-30")
-                        .when(pl.col("target_month") == 2)
-                        .then(
-                            pl.when((pl.col("target_year_final") % 4 == 0) & 
-                                ((pl.col("target_year_final") % 100 != 0) | (pl.col("target_year_final") % 400 == 0)))
-                            .then(pl.col("target_year_final").cast(pl.Utf8) + "-02-29")  # Leap year
-                            .otherwise(pl.col("target_year_final").cast(pl.Utf8) + "-02-28")  # Non-leap year
+                    # Melt to long format using Polars (vectorized operation)
+                    forecast_df = (
+                        sarima_df
+                        .melt(
+                            id_vars=["row_id", "periodo"],
+                            value_vars=[f"lag_{i}" for i in range(12)],
+                            variable_name="lag",
+                            value_name="y"
                         )
-                        .alias("ds"),
-                        ("row_" + pl.col("row_id").cast(pl.Utf8)).alias("unique_id")
-                    ])
-                    .select(["unique_id", "ds", "y", "row_id"])
-                    .sort(["row_id", "lag_num"])
-                )
-
-                # Convert to pandas and fit model
-                forecast_df_pandas = forecast_df.select(["unique_id", "ds", "y"]).to_pandas()
-                forecast_df_pandas['ds'] = pd.to_datetime(forecast_df_pandas['ds'])
-
-                sf = StatsForecast(models=[AutoARIMA(season_length=9)], freq='ME')  # 9 month seasonality
-                sf.fit(forecast_df_pandas)
-                predictions = sf.predict(h=2)
-
-                # Map predictions back
-                predictions_pl = pl.from_pandas(predictions).select(["unique_id", "AutoARIMA"])
-                predictions_mapped = (
-                    predictions_pl
-                    .with_columns(
-                        pl.col("unique_id").str.extract(r"row_(\d+)").cast(pl.Int32).alias("row_id")
+                        .with_columns([
+                            # Extract lag number
+                            pl.col("lag").str.extract(r"lag_(\d+)").cast(pl.Int32).alias("lag_num"),
+                            # Calculate target year and month vectorized
+                            (pl.col("periodo") // 100).alias("year"),
+                            (pl.col("periodo") % 100).alias("month")
+                        ])
+                        .with_columns([
+                            # Calculate target month and year with proper handling of underflow
+                            (pl.col("month") - pl.col("lag_num")).alias("target_month_raw"),
+                            pl.col("year").alias("target_year")
+                        ])
+                        .with_columns([
+                            # Handle month underflow correctly for any negative value
+                            pl.when(pl.col("target_month_raw") <= 0)
+                            .then(((pl.col("target_month_raw") - 1) % 12) + 1)
+                            .otherwise(pl.col("target_month_raw"))
+                            .alias("target_month"),
+                            
+                            # Handle year adjustment for multiple year underflow
+                            pl.when(pl.col("target_month_raw") <= 0)
+                            .then(pl.col("target_year") - ((-pl.col("target_month_raw")) // 12 + 1))
+                            .otherwise(pl.col("target_year"))
+                            .alias("target_year_final")
+                        ])
+                        .with_columns([
+                            # Create proper end-of-month dates using Polars date functions
+                            pl.date(
+                                pl.col("target_year_final"),
+                                pl.col("target_month"),
+                                1
+                            )
+                            .dt.month_end()
+                            .alias("ds"),
+                            # Create unique_id
+                            ("row_" + pl.col("row_id").cast(pl.Utf8)).alias("unique_id")
+                        ])
+                        .select(["unique_id", "ds", "y", "row_id", "lag_num"])
+                        .sort(["row_id", "lag_num"])  # Sort by row_id and lag for proper time series order
                     )
-                    .select(["row_id", "AutoARIMA"])
-                    .rename({"AutoARIMA": "quantity_tn_standardized_predicted_sarima_9m"})
-                )
 
-                self.df = (
-                    self.df
-                    .with_row_index("row_id")
-                    .join(predictions_mapped, on="row_id", how="left")
-                    .drop("row_id")
-                    .with_columns(
-                        pl.col("quantity_tn_standardized_predicted_sarima_9m")
-                        .cast(pl.Float64)
-                        .fill_null(0.0)
-                        .fill_nan(0.0)
+                    # Convert to pandas only once
+                    forecast_df_pandas = forecast_df.select(["unique_id", "ds", "y"]).to_pandas()
+                    
+                    # Ensure datetime format is correct
+                    forecast_df_pandas['ds'] = pd.to_datetime(forecast_df_pandas['ds'])
+                    
+                    forecast_df_pandas['y'] = (
+                        forecast_df_pandas
+                        .groupby('unique_id')['y']
+                        .transform(lambda x: x.fillna(0))
                     )
-                    .with_columns(
-                        (pl.col("quantity_tn_standardized") - pl.col("quantity_tn_standardized_predicted_sarima_9m"))
-                        .alias("quantity_sarima_9m_residual")
-                    )
-                )
 
-                logger.info("✅ 9 month SARIMA predictions added successfully.")
+                    # Fit model and predict
+                    sf = StatsForecast(models=[AutoARIMA(season_length=12)], freq='ME')
+                    sf.fit(forecast_df_pandas)
+                    predictions = sf.predict(h=2)
 
-        if eval(str(self.dataset["add_6m_sarima_features"])):
-            if int(self.dataset["max_z_lag_periods"]) < 5:
-                logger.warning("❗ Cannot add 6 month SARIMA features because max_z_lag_periods is less than 5. Skipping...")
-            else:
-                logger.info("➕ Adding 6m SARIMA predictions to the dataset...")
+                    # Convert predictions back to Polars and join efficiently
+                    predictions_pl = pl.from_pandas(predictions).select(["unique_id", "AutoARIMA"])
 
-                # Select lag columns and current value (0-5 months)
-                lag_columns = [col for col in self.df.columns if col.startswith('quantity_tn_z_lag_') and int(col.split('_')[-1]) <= 5]
-
-                sarima_df = (
-                    self.df
-                    .select(["periodo"] + lag_columns + ["quantity_tn_standardized"])
-                    .with_row_index("row_id")
-                    .rename({
-                        'quantity_tn_standardized': 'lag_0',
-                        **{f'quantity_tn_z_lag_{i}': f'lag_{i}' for i in range(1, 6)}
-                    })
-                    .fill_nan(0.0).fill_null(0.0)
-                )
-
-                # Melt to long format
-                forecast_df = (
-                    sarima_df
-                    .melt(
-                        id_vars=["row_id", "periodo"],
-                        value_vars=[f"lag_{i}" for i in range(6)],
-                        variable_name="lag",
-                        value_name="y"
-                    )
-                    .with_columns([
-                        pl.col("lag").str.extract(r"lag_(\d+)").cast(pl.Int32).alias("lag_num"),
-                        (pl.col("periodo") // 100).alias("year"),
-                        (pl.col("periodo") % 100).alias("month")
-                    ])
-                    .with_columns([
-                        (pl.col("month") - pl.col("lag_num")).alias("target_month_raw"),
-                        pl.col("year").alias("target_year")
-                    ])
-                    .with_columns([
-                        pl.when(pl.col("target_month_raw") <= 0)
-                        .then(pl.col("target_month_raw") + 12)
-                        .otherwise(pl.col("target_month_raw"))
-                        .alias("target_month"),
-                        
-                        pl.when(pl.col("target_month_raw") <= 0)
-                        .then(pl.col("target_year") - 1)
-                        .otherwise(pl.col("target_year"))
-                        .alias("target_year_final")
-                    ])
-                    .with_columns([
-                        # Create date string for end of month
-                        pl.when(pl.col("target_month").is_in([1, 3, 5, 7, 8, 10, 12]))
-                        .then(pl.col("target_year_final").cast(pl.Utf8) + "-" + 
-                            pl.col("target_month").cast(pl.Utf8).str.zfill(2) + "-31")
-                        .when(pl.col("target_month").is_in([4, 6, 9, 11]))
-                        .then(pl.col("target_year_final").cast(pl.Utf8) + "-" + 
-                            pl.col("target_month").cast(pl.Utf8).str.zfill(2) + "-30")
-                        .when(pl.col("target_month") == 2)
-                        .then(
-                            pl.when((pl.col("target_year_final") % 4 == 0) & 
-                                ((pl.col("target_year_final") % 100 != 0) | (pl.col("target_year_final") % 400 == 0)))
-                            .then(pl.col("target_year_final").cast(pl.Utf8) + "-02-29")  # Leap year
-                            .otherwise(pl.col("target_year_final").cast(pl.Utf8) + "-02-28")  # Non-leap year
+                    # Extract row_id from unique_id and join back to original data
+                    predictions_mapped = (
+                        predictions_pl
+                        .with_columns(
+                            pl.col("unique_id").str.extract(r"row_(\d+)").cast(pl.Int32).alias("row_id")
                         )
-                        .alias("ds"),
-                        ("row_" + pl.col("row_id").cast(pl.Utf8)).alias("unique_id")
-                    ])
-                    .select(["unique_id", "ds", "y", "row_id"])
-                    .sort(["row_id", "lag_num"])
-                )
-
-                # Convert to pandas and fit model
-                forecast_df_pandas = forecast_df.select(["unique_id", "ds", "y"]).to_pandas()
-                forecast_df_pandas['ds'] = pd.to_datetime(forecast_df_pandas['ds'])
-
-                sf = StatsForecast(models=[AutoARIMA(season_length=6)], freq='ME')  # 6 month seasonality
-                sf.fit(forecast_df_pandas)
-                predictions = sf.predict(h=2)
-
-                # Map predictions back
-                predictions_pl = pl.from_pandas(predictions).select(["unique_id", "AutoARIMA"])
-                predictions_mapped = (
-                    predictions_pl
-                    .with_columns(
-                        pl.col("unique_id").str.extract(r"row_(\d+)").cast(pl.Int32).alias("row_id")
+                        .select(["row_id", "AutoARIMA"])
+                        .rename({"AutoARIMA": "quantity_tn_predicted_sarima_12m"})
                     )
-                    .select(["row_id", "AutoARIMA"])
-                    .rename({"AutoARIMA": "quantity_tn_standardized_predicted_sarima_6m"})
-                )
 
-                self.df = (
-                    self.df
-                    .with_row_index("row_id")
-                    .join(predictions_mapped, on="row_id", how="left")
-                    .drop("row_id")
-                    .with_columns(
-                        pl.col("quantity_tn_standardized_predicted_sarima_6m")
-                        .cast(pl.Float64)
-                        .fill_null(0.0)
-                        .fill_nan(0.0)
+                    # Add predictions to original dataframe
+                    self.df = (
+                        self.df
+                        .with_row_index("row_id")
+                        .join(predictions_mapped, on="row_id", how="left")
+                        .drop("row_id")
+                        .with_columns(
+                            pl.col("quantity_tn_predicted_sarima_12m")
+                            .cast(pl.Float64)
+                        )
+                        .with_columns(
+                            pl.when(
+                                pl.col("quantity_tn_cumulative_mean").is_not_nan() & 
+                                pl.col("quantity_tn_cumulative_std").is_not_nan() & 
+                                pl.col("quantity_tn_standardized").is_not_nan() &
+                                pl.col("quantity_tn_predicted_sarima_12m").is_not_nan()
+                            ).then(
+                                ((pl.col("quantity_tn_predicted_sarima_12m") - pl.col("quantity_tn_cumulative_mean")) / pl.col("quantity_tn_cumulative_std"))
+                                - pl.col("quantity_tn_standardized")
+                            ).otherwise(pl.lit(None))
+                            .alias("quantity_target_sarima_12m_prediction")
+                        )
                     )
-                    .with_columns(
-                        (pl.col("quantity_tn_standardized") - pl.col("quantity_tn_standardized_predicted_sarima_6m"))
-                        .alias("quantity_sarima_6m_residual")
-                    )
-                )
 
-                logger.info("✅ 6 month SARIMA predictions added successfully.")
+                    logger.info("✅ 12 month SARIMA predictions added successfully.")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Error adding SARIMA features: {str(e)}")
+                    raise e
 
     def _identify_features(self):
         """Identify numeric and categorical features."""

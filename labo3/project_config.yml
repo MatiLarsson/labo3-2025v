@@ -1,4 +1,4 @@
-experiment_name: "demand_forecasting_exp_12"
+experiment_name: "demand_forecasting_exp_13"
 
 gcp:
   project_id: "labo3-464122"
@@ -60,9 +60,7 @@ dataset:
     - descripcion
   dataset_name: "dataset.parquet"
   clipping_threshold: 1e7  # Extreme value clipping threshold
-  add_12m_sarima_features: true  # Add SARIMA features for 12 months
-  add_9m_sarima_features: true  # Add SARIMA features for 9 months
-  add_6m_sarima_features: true  # Add SARIMA features for 6 months
+  add_12m_sarima_features: true  # Add SARIMA features trained on 12 months of data with a 12-month seasonal cycle
 
 strategy:
   test_month: 201910 # int

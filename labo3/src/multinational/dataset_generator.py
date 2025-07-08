@@ -192,7 +192,7 @@ class DatasetGenerator:
                         ORDER BY periodo
                     ) - {z_mean_column}
                 ) / {z_std_column}
-                ELSE 0
+                ELSE NULL
             END AS {column_name}_z_lag_{lag}"""
                 
             z_lag_clauses.append(lag_clause)
@@ -1026,6 +1026,17 @@ class DatasetGenerator:
                         
                         -- iperiodo (from 1 to 36) according to min and max periodo available in period_series
                         ROW_NUMBER() OVER (ORDER BY periodo) AS iperiodo,
+
+                        -- Periods since last positive quantity_tn
+                        ROW_NUMBER() OVER (
+                            PARTITION BY product_id, customer_id, 
+                            SUM(CASE WHEN quantity_tn > 0 THEN 1 ELSE 0 END) OVER (
+                                PARTITION BY product_id, customer_id 
+                                ORDER BY periodo 
+                                ROWS UNBOUNDED PRECEDING
+                            )
+                            ORDER BY periodo
+                        ) - 1 AS periods_since_last_positive_quantity,
                         
                         -- Target column: quantity_tn_target (quantity_tn shifted by 2 periods forward)
                         COALESCE(LEAD(quantity_tn, 2, 0) OVER (PARTITION BY product_id, customer_id ORDER BY periodo), 0) AS quantity_tn_target
@@ -1122,6 +1133,7 @@ class DatasetGenerator:
                         pcpe.quarter_number,
                         pcpe.semester_number,
                         pcpe.iperiodo,
+                        pcpe.periods_since_last_positive_quantity,
 
                         -- Aggregate features
                         pcpwa.cat1_total_tn, pcpwa.cat1_total_cust_request_qty, pcpwa.cat1_total_cust_request_tn, pcpwa.cat1_total_stock_final,
@@ -1226,6 +1238,8 @@ class DatasetGenerator:
 
                         -- Date features
                         month_number, year_number, quarter_number, semester_number, iperiodo,
+
+                        periods_since_last_positive_quantity,
                             
                         -- Raw quantities
                         quantity_cust_request_qty,
