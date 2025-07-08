@@ -61,17 +61,19 @@ rm -f .env.gcp
 echo "✅ Environment configured with MLflow at $NODE0_IP:5000"
 
 # Upload data files (only if they don't exist)
-yq '.paths.data_files[]' $CONFIG_FILE | while read file; do
-    if ! gsutil -q stat gs://$BUCKET_NAME/$file 2>/dev/null; then
-        gsutil cp $file gs://$BUCKET_NAME/$file && echo "📤 Uploaded: $file"
-    else
-        echo "✅ Exists: $file"
+yq -r '.paths.data_files[]' $CONFIG_FILE | while IFS= read -r file; do
+    if [ -n "$file" ] && [ "$file" != "null" ]; then
+        if ! gsutil -q stat gs://$BUCKET_NAME/$file 2>/dev/null; then
+            if [ -f "$file" ]; then
+                gsutil cp "$file" gs://$BUCKET_NAME/$file && echo "📤 Uploaded: $file"
+            else
+                echo "⚠️ File not found: $file"
+            fi
+        else
+            echo "✅ Exists: $file"
+        fi
     fi
 done
-
-# Erase previous logs
-echo "🧹 Cleaning up previous logs..."
-gsutil -m rm -r gs://$BUCKET_NAME/run_logs/ 2>/dev/null || echo "📂 No previous results to clean"
 
 # Check for existing worker instance and clean it up
 echo "🔍 Checking for existing instance named '$INSTANCE_NAME'..."
@@ -259,6 +261,9 @@ if [ ${PIPESTATUS[0]} -eq 0 ]; then
     echo "✅ Instance created successfully"
     echo "📊 Monitor: gcloud compute ssh $INSTANCE_NAME --zone=$WORKER_ZONE --command='sudo tmux attach -t ml'"
     echo "📁 Logs will be uploaded to gs://$BUCKET_NAME/run_logs/ even if preempted"
+    # Erase previous logs
+    echo "🧹 Cleaning up previous logs..."
+    gsutil -m rm -r gs://$BUCKET_NAME/run_logs/ 2>/dev/null || echo "📂 No previous results to clean"
 else
     echo "❌ Instance creation failed"
     exit 1
