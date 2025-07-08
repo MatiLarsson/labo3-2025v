@@ -1003,6 +1003,16 @@ class DatasetGenerator:
                     LEFT JOIN product_aggregates pa ON apcp.product_id = pa.product_id AND apcp.periodo = pa.periodo
                     LEFT JOIN customer_aggregates ca ON apcp.customer_id = ca.customer_id AND apcp.periodo = ca.periodo
                 ),
+                product_customer_period_with_groups AS (
+                    SELECT *,
+                        -- Running count of positive quantities up to current row
+                        SUM(CASE WHEN quantity_tn > 0 THEN 1 ELSE 0 END) OVER (
+                            PARTITION BY product_id, customer_id
+                            ORDER BY periodo
+                            ROWS UNBOUNDED PRECEDING
+                        ) AS positive_quantity_group
+                    FROM product_customer_period_with_aggregates
+                ),
                 product_customer_period_extras AS (
                     SELECT
                         product_id,
@@ -1026,22 +1036,17 @@ class DatasetGenerator:
                         
                         -- iperiodo (from 1 to 36) according to min and max periodo available in period_series
                         ROW_NUMBER() OVER (ORDER BY periodo) AS iperiodo,
-
+                        
                         -- Periods since last positive quantity_tn
                         ROW_NUMBER() OVER (
-                            PARTITION BY product_id, customer_id, 
-                            SUM(CASE WHEN quantity_tn > 0 THEN 1 ELSE 0 END) OVER (
-                                PARTITION BY product_id, customer_id 
-                                ORDER BY periodo 
-                                ROWS UNBOUNDED PRECEDING
-                            )
+                            PARTITION BY product_id, customer_id, positive_quantity_group
                             ORDER BY periodo
                         ) - 1 AS periods_since_last_positive_quantity,
                         
                         -- Target column: quantity_tn_target (quantity_tn shifted by 2 periods forward)
                         COALESCE(LEAD(quantity_tn, 2, 0) OVER (PARTITION BY product_id, customer_id ORDER BY periodo), 0) AS quantity_tn_target
                         
-                    FROM product_customer_period_with_aggregates
+                    FROM product_customer_period_with_groups
                 ),
                 product_customer_period_cumulative_standardization_stats AS (
                     SELECT
