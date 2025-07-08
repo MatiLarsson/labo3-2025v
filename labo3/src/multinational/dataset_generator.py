@@ -1307,6 +1307,28 @@ class DatasetGenerator:
                         quantity_tn_standardized,
                         quantity_stock_final_standardized,
                         quantity_tn_target_standardized - quantity_tn_standardized AS target,
+
+                        -- Lags
+                        {self._generate_lag_features(
+                            column_name='quantity_cust_request_qty',
+                            max_lag=self.dataset["max_lag_periods"],
+                            partition_columns=['product_id', 'customer_id']
+                        )},
+                        {self._generate_lag_features(
+                            column_name='quantity_cust_request_tn',
+                            max_lag=self.dataset["max_lag_periods"],
+                            partition_columns=['product_id', 'customer_id']
+                        )},
+                        {self._generate_lag_features(
+                            column_name='quantity_tn',
+                            max_lag=self.dataset["max_lag_periods"],
+                            partition_columns=['product_id', 'customer_id']
+                        )},
+                        {self._generate_lag_features(
+                            column_name='quantity_stock_final',
+                            max_lag=self.dataset["max_lag_periods"],
+                            partition_columns=['product_id', 'customer_id']
+                        )},
                             
                         -- Z Lags
                         {self._generate_lag_features_on_standardized_values(
