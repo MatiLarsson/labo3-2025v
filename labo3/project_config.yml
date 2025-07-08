@@ -4,7 +4,7 @@ gcp:
   project_id: "labo3-464122"
   bucket_name: "labo3_bucket"
   worker_zone: "us-east1-c" # b, c, d
-  node0_zone: "us-east1-d" # Fixed
+  node0_zone: "us-east1-e" # Fixed
   region: "us-east1"
   blob_path: "data"
 
