@@ -216,6 +216,7 @@ class LightGBMModel:
                                     logger.info(f"✅ Completed chunk {returned_chunk_id}")
                             except Exception as e:
                                 logger.error(f"❌ Chunk {chunk_id} failed: {str(e)}")
+                                raise e
 
                     # Combine predictions and continue with your existing code
                     if predictions_list:
@@ -223,7 +224,7 @@ class LightGBMModel:
                         logger.info(f"✅ Combined {len(predictions)} predictions from {len(predictions_list)} chunks")
                     else:
                         logger.error("❌ No predictions generated")
-                        return
+                        raise RuntimeError("No predictions generated from SARIMA fitting")
 
                     # Rest of your existing code for joining back to self.df
                     predictions_pl = pl.from_pandas(predictions).select(["unique_id", "AutoARIMA"])
