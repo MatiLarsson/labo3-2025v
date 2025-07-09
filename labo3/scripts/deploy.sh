@@ -259,11 +259,12 @@ gcloud compute instances create $INSTANCE_NAME \
 
 if [ ${PIPESTATUS[0]} -eq 0 ]; then
     echo "✅ Instance created successfully"
-    echo "📊 Monitor: gcloud compute ssh $INSTANCE_NAME --zone=$WORKER_ZONE --command='sudo tmux attach -t ml'"
-    echo "📁 Logs will be uploaded to gs://$BUCKET_NAME/run_logs/ even if preempted"
     # Erase previous logs
     echo "🧹 Cleaning up previous logs..."
     gsutil -m rm -r gs://$BUCKET_NAME/run_logs/ 2>/dev/null || echo "📂 No previous results to clean"
+    # Monitor instance
+    echo "📊 Monitor: gcloud compute ssh $INSTANCE_NAME --zone=$WORKER_ZONE --command='sudo tmux attach -t ml'"
+    echo "📁 Logs will be uploaded to gs://$BUCKET_NAME/run_logs/ even if preempted"
 else
     echo "❌ Instance creation failed"
     exit 1
