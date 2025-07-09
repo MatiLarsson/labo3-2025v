@@ -77,19 +77,23 @@ done
 
 # Check for existing worker instance and clean it up
 echo "🔍 Checking for existing instance named '$INSTANCE_NAME'..."
-WORKER_EXISTS=$(gcloud compute instances list --zones=$WORKER_ZONE --format="value(name)" --filter="name:$INSTANCE_NAME" 2>/dev/null || echo "")
+WORKER_EXISTS=$(gcloud compute instances list --format="value(name,zone)" --filter="name:$INSTANCE_NAME" 2>/dev/null || echo "")
 
 if [ ! -z "$WORKER_EXISTS" ]; then
-    echo "🗑️ Deleting existing instance in zone $WORKER_ZONE: $WORKER_EXISTS"
+    # Extract the zone from the result (format is "name zone")
+    EXISTING_ZONE=$(echo "$WORKER_EXISTS" | awk '{print $2}')
+    EXISTING_NAME=$(echo "$WORKER_EXISTS" | awk '{print $1}')
+    
+    echo "🗑️ Deleting existing instance '$EXISTING_NAME' in zone $EXISTING_ZONE"
 
-    gcloud compute instances delete $INSTANCE_NAME --zone=$WORKER_ZONE --quiet 2>/dev/null || echo "⚠️ Could not delete $INSTANCE_NAME instance"
+    gcloud compute instances delete $EXISTING_NAME --zone=$EXISTING_ZONE --quiet 2>/dev/null || echo "⚠️ Could not delete $EXISTING_NAME instance"
     
     # Wait for worker instance to be fully deleted
-    echo "⏳ Waiting for instance '$INSTANCE_NAME' to be fully deleted..."
+    echo "⏳ Waiting for instance '$EXISTING_NAME' to be fully deleted..."
     while true; do
         sleep 10
 
-        WORKER_STATUS=$(gcloud compute instances list --zones=$WORKER_ZONE --format="value(name)" --filter="name:$INSTANCE_NAME" 2>/dev/null || echo "")
+        WORKER_STATUS=$(gcloud compute instances list --format="value(name)" --filter="name:$INSTANCE_NAME" 2>/dev/null || echo "")
         
         if [ -z "$WORKER_STATUS" ]; then
             echo "✅ Instance '$INSTANCE_NAME' deleted successfully"
@@ -99,7 +103,7 @@ if [ ! -z "$WORKER_EXISTS" ]; then
         fi
     done
 else
-    echo "✅ No existing instance named '$INSTANCE_NAME' found in zone $WORKER_ZONE"
+    echo "✅ No existing instance named '$INSTANCE_NAME' found"
 fi
 
 # Create startup script with preemption handling
