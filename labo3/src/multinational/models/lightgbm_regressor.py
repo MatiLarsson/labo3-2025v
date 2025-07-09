@@ -85,187 +85,6 @@ class LightGBMModel:
         self.df = pl.read_parquet(local_path)
         logger.info("✅ Data successfully loaded from storage.")
 
-    def _add_extra_features(self):
-        if eval(str(self.dataset["add_12m_sarima_features"])):
-            if int(self.dataset["max_z_lag_periods"]) < 11:
-                logger.warning("❗ Cannot add 12 month SARIMA features because max_z_lag_periods is less than 11. Skipping...")
-            else:
-                logger.info("➕ Adding 12m SARIMA predictions to the dataset...")
-
-                try:
-                    # Your existing Polars data preparation code...
-                    lag_columns = [col for col in self.df.columns if col.startswith('quantity_tn_lag_') and int(col.split('_')[-1]) <= 11]
-
-                    sarima_df = (
-                        self.df
-                        .select(["periodo"] + lag_columns + ["quantity_tn"])
-                        .with_row_index("row_id")
-                        .rename({
-                            'quantity_tn': 'lag_0',
-                            **{f'quantity_tn_lag_{i}': f'lag_{i}' for i in range(1, 12)}
-                        })
-                        .with_columns([
-                            pl.col(f"lag_{i}").fill_null(0.0) for i in range(12)
-                        ])
-                    )
-
-                    # Melt and transform (your existing code)
-                    forecast_df = (
-                        sarima_df
-                        .melt(
-                            id_vars=["row_id", "periodo"],
-                            value_vars=[f"lag_{i}" for i in range(12)],
-                            variable_name="lag",
-                            value_name="y"
-                        )
-                        .with_columns([
-                            pl.col("lag").str.extract(r"lag_(\d+)").cast(pl.Int32).alias("lag_num"),
-                            (pl.col("periodo") // 100).alias("year"),
-                            (pl.col("periodo") % 100).alias("month")
-                        ])
-                        .with_columns([
-                            (pl.col("month") - pl.col("lag_num")).alias("target_month_raw"),
-                            pl.col("year").alias("target_year")
-                        ])
-                        .with_columns([
-                            pl.when(pl.col("target_month_raw") <= 0)
-                            .then(((pl.col("target_month_raw") - 1) % 12) + 1)
-                            .otherwise(pl.col("target_month_raw"))
-                            .alias("target_month"),
-                            
-                            pl.when(pl.col("target_month_raw") <= 0)
-                            .then(pl.col("target_year") - ((-pl.col("target_month_raw")) // 12 + 1))
-                            .otherwise(pl.col("target_year"))
-                            .alias("target_year_final")
-                        ])
-                        .with_columns([
-                            pl.date(
-                                pl.col("target_year_final"),
-                                pl.col("target_month"),
-                                1
-                            )
-                            .dt.month_end()
-                            .alias("ds"),
-                            ("row_" + pl.col("row_id").cast(pl.Utf8)).alias("unique_id")
-                        ])
-                        .select(["unique_id", "ds", "y", "row_id", "lag_num"])
-                        .sort(["row_id", "lag_num"])
-                        .with_columns([
-                            pl.col("y").fill_null(0.0).over("unique_id")
-                        ])
-                    )
-
-                    # Convert to pandas only for StatsForecast
-                    forecast_df_pandas = forecast_df.select(["unique_id", "ds", "y"]).to_pandas()
-                    forecast_df_pandas['ds'] = pd.to_datetime(forecast_df_pandas['ds'])
-
-                    logger.info(f"🚀 Starting optimized parallel SARIMA fitting...")
-
-                    # Get unique IDs using Polars
-                    unique_ids_pl = forecast_df.select("unique_id").unique().sort("unique_id")
-                    unique_ids = unique_ids_pl.to_pandas()['unique_id'].values
-
-                    n_chunks = min(os.cpu_count(), len(unique_ids))
-                    chunk_size = max(1, len(unique_ids) // n_chunks)
-                    
-                    # Prepare data for parallel processing (pure data, no class references)
-                    chunks = []
-                    for i in range(n_chunks):
-                        start_idx = i * chunk_size
-                        end_idx = min((i + 1) * chunk_size, len(unique_ids))
-                        
-                        if start_idx < len(unique_ids):
-                            chunk_unique_ids = unique_ids[start_idx:end_idx].tolist()
-                            
-                            # Use Polars filtering (orders of magnitude faster than pandas)
-                            chunk_df_pl = forecast_df.filter(
-                                pl.col("unique_id").is_in(chunk_unique_ids)
-                            )
-                            
-                            # Convert to pandas only for this specific chunk
-                            chunk_df = (
-                                chunk_df_pl
-                                .select(["unique_id", "ds", "y"])
-                                .to_pandas()
-                            )
-                            chunk_df['ds'] = pd.to_datetime(chunk_df['ds'])
-                            
-                            chunks.append((chunk_df, i))
-                            logger.info(f"✅ Prepared chunk {i}: {len(chunk_df)} rows, {len(chunk_unique_ids)} series")
-
-                    logger.info(f"🎯 All {len(chunks)} chunks prepared")
-
-                    logger.info(f"📊 Processing {len(unique_ids)} time series in {len(chunks)} parallel chunks")
-
-                    # Parallel processing with the external function
-                    predictions_list = []
-                    with ProcessPoolExecutor(max_workers=n_chunks) as executor:
-                        # Submit all jobs using the module-level function
-                        future_to_chunk = {
-                            executor.submit(fit_predict_sarima_chunk, chunk): i 
-                            for i, chunk in enumerate(chunks)
-                        }
-                        
-                        # Collect results
-                        for future in as_completed(future_to_chunk):
-                            chunk_id = future_to_chunk[future]
-                            try:
-                                result, returned_chunk_id = future.result()
-                                if len(result) > 0:
-                                    predictions_list.append(result)
-                                    logger.info(f"✅ Completed chunk {returned_chunk_id}")
-                            except Exception as e:
-                                logger.error(f"❌ Chunk {chunk_id} failed: {str(e)}")
-                                raise e
-
-                    # Combine predictions and continue with your existing code
-                    if predictions_list:
-                        predictions = pd.concat(predictions_list, ignore_index=True)
-                        logger.info(f"✅ Combined {len(predictions)} predictions from {len(predictions_list)} chunks")
-                    else:
-                        logger.error("❌ No predictions generated")
-                        raise RuntimeError("No predictions generated from SARIMA fitting")
-
-                    # Rest of your existing code for joining back to self.df
-                    predictions_pl = pl.from_pandas(predictions).select(["unique_id", "AutoARIMA"])
-
-                    predictions_mapped = (
-                        predictions_pl
-                        .with_columns(
-                            pl.col("unique_id").str.extract(r"row_(\d+)").cast(pl.Int32).alias("row_id")
-                        )
-                        .select(["row_id", "AutoARIMA"])
-                        .rename({"AutoARIMA": "quantity_tn_predicted_sarima_12m"})
-                    )
-
-                    self.df = (
-                        self.df
-                        .with_row_index("row_id")
-                        .join(predictions_mapped, on="row_id", how="left")
-                        .drop("row_id")
-                        .with_columns([
-                            pl.col("quantity_tn_predicted_sarima_12m").cast(pl.Float64)
-                        ])
-                        .with_columns([
-                            pl.when(
-                                pl.col("quantity_tn_cumulative_mean").is_not_nan() & 
-                                pl.col("quantity_tn_cumulative_std").is_not_nan() & 
-                                pl.col("quantity_tn_standardized").is_not_nan() &
-                                pl.col("quantity_tn_predicted_sarima_12m").is_not_nan()
-                            ).then(
-                                ((pl.col("quantity_tn_predicted_sarima_12m") - pl.col("quantity_tn_cumulative_mean")) / pl.col("quantity_tn_cumulative_std"))
-                                - pl.col("quantity_tn_standardized")
-                            ).otherwise(pl.lit(None))
-                            .alias("quantity_target_sarima_12m_prediction")
-                        ])
-                    )
-
-                    logger.info("✅ 12 month SARIMA predictions added successfully using parallel processing.")
-                    
-                except Exception as e:
-                    logger.error(f"❌ Error adding SARIMA features: {str(e)}")
-                    raise e
-
     def _identify_features(self):
         """Identify numeric and categorical features."""
         logger.info("🔍 Identifying feature types...")
@@ -319,7 +138,7 @@ class LightGBMModel:
         """Cherry-flag rows based on specific criteria."""
         logger.info("🍒 Cherry-flagging rows based on criteria...")
         
-        # Flag rows where exists at least 3 months (from unbounded preceding up to current month over periodo column) where quantity_tn > 0 (grouping by customer_id, product_id)
+        # Flag rows where exists at least self.dataset["positive_quantity_tn_cherry_months"] months (from unbounded preceding up to current month over periodo column) where quantity_tn > 0 (grouping by customer_id, product_id)
         self.df = (
             self.df
             .sort(['customer_id', 'product_id', 'periodo'])  # Ensure proper ordering
@@ -329,7 +148,7 @@ class LightGBMModel:
                 .cast(pl.Int32)  # Convert boolean to int for cum_sum
                 .cum_sum()
                 .over(['customer_id', 'product_id'])
-                .ge(int(self.dataset["positive_quantity_tn_cherry_months"]))  # Convert to boolean flag (True if >= 3, False otherwise)
+                .ge(int(self.dataset["positive_quantity_tn_cherry_months"]))  # Convert to boolean flag (True if >= self.dataset["positive_quantity_tn_cherry_months"], False otherwise)
                 .cast(pl.Int32)  # Convert boolean to int (1/0)
                 .alias('cherry_flag')
             )
@@ -384,6 +203,191 @@ class LightGBMModel:
         
         logger.info("✅ Categorical features encoded successfully.")
 
+    def _add_extra_features(self):
+        if eval(str(self.dataset["add_12m_sarima_features"])):
+            if int(self.dataset["max_z_lag_periods"]) < 11:
+                logger.warning("❗ Cannot add 12 month SARIMA features because max_z_lag_periods is less than 11. Skipping...")
+            else:
+                logger.info("➕ Adding 12m SARIMA predictions to the dataset (for cherry & non z problematic rows)..")
+
+                try:
+                    lag_columns = [col for col in self.df.columns if col.startswith('quantity_tn_lag_') and int(col.split('_')[-1]) <= 11]
+
+                    # Add row index to the main dataframe ONCE
+                    self.df = self.df.with_row_index("original_row_id")
+
+                    # Filter and prepare data for SARIMA
+                    sarima_df = (
+                        self.df
+                        .filter(pl.col('cherry_flag') == 1)
+                        .filter(pl.col('invalid_standardization_flag') == 0)
+                        .select(["original_row_id"] + ["periodo"] + lag_columns + ["quantity_tn"])
+                        .rename({
+                            'quantity_tn': 'lag_0',
+                            **{f'quantity_tn_lag_{i}': f'lag_{i}' for i in range(1, 12)}
+                        })
+                        .with_columns([
+                            pl.col(f"lag_{i}").fill_null(0.0) for i in range(12)
+                        ])
+                    )
+
+                    # Update the melt operation to include original_row_id
+                    forecast_df = (
+                        sarima_df
+                        .melt(
+                            id_vars=["original_row_id", "periodo"],
+                            value_vars=[f"lag_{i}" for i in range(12)],
+                            variable_name="lag",
+                            value_name="y"
+                        )
+                        .with_columns([
+                            pl.col("lag").str.extract(r"lag_(\d+)").cast(pl.Int32).alias("lag_num"),
+                            (pl.col("periodo") // 100).alias("year"),
+                            (pl.col("periodo") % 100).alias("month")
+                        ])
+                        .with_columns([
+                            (pl.col("month") - pl.col("lag_num")).alias("target_month_raw"),
+                            pl.col("year").alias("target_year")
+                        ])
+                        .with_columns([
+                            pl.when(pl.col("target_month_raw") <= 0)
+                            .then(((pl.col("target_month_raw") - 1) % 12) + 1)
+                            .otherwise(pl.col("target_month_raw"))
+                            .alias("target_month"),
+                            
+                            pl.when(pl.col("target_month_raw") <= 0)
+                            .then(pl.col("target_year") - ((-pl.col("target_month_raw")) // 12 + 1))
+                            .otherwise(pl.col("target_year"))
+                            .alias("target_year_final")
+                        ])
+                        .with_columns([
+                            pl.date(
+                                pl.col("target_year_final"),
+                                pl.col("target_month"),
+                                1
+                            )
+                            .dt.month_end()
+                            .alias("ds"),
+                            ("row_" + pl.col("original_row_id").cast(pl.Utf8)).alias("unique_id")
+                        ])
+                        .select(["unique_id", "ds", "y", "original_row_id", "lag_num"])
+                        .sort(["original_row_id", "lag_num"])
+                        .with_columns([
+                            pl.col("y").fill_null(0.0).over("unique_id")
+                        ])
+                    )
+
+                    # Convert to pandas only for StatsForecast
+                    forecast_df_pandas = forecast_df.select(["unique_id", "ds", "y"]).to_pandas()
+                    forecast_df_pandas['ds'] = pd.to_datetime(forecast_df_pandas['ds'])
+
+                    logger.info(f"🚀 Starting optimized parallel SARIMA fitting...")
+
+                    # Get unique IDs using Polars
+                    unique_ids_pl = forecast_df.select("unique_id").unique().sort("unique_id")
+                    unique_ids = unique_ids_pl.to_pandas()['unique_id'].values
+
+                    n_chunks = min(os.cpu_count(), len(unique_ids))
+                    chunk_size = max(1, len(unique_ids) // n_chunks)
+                    
+                    # Prepare data for parallel processing (pure data, no class references)
+                    chunks = []
+                    for i in range(n_chunks):
+                        start_idx = i * chunk_size
+                        end_idx = min((i + 1) * chunk_size, len(unique_ids))
+                        
+                        if start_idx < len(unique_ids):
+                            chunk_unique_ids = unique_ids[start_idx:end_idx].tolist()
+                            
+                            # Use Polars filtering (orders of magnitude faster than pandas)
+                            chunk_df_pl = forecast_df.filter(
+                                pl.col("unique_id").is_in(chunk_unique_ids)
+                            )
+                            
+                            # Convert to pandas only for this specific chunk
+                            chunk_df = (
+                                chunk_df_pl
+                                .select(["unique_id", "ds", "y"])
+                                .to_pandas()
+                            )
+                            chunk_df['ds'] = pd.to_datetime(chunk_df['ds'])
+                            
+                            chunks.append((chunk_df, i))
+                            logger.info(f"✅ Prepared chunk {i}: {len(chunk_df)} rows, {len(chunk_unique_ids)} series")
+
+                    logger.info(f"🎯 All {len(chunks)} chunks prepared")
+                    logger.info(f"📊 Processing {len(unique_ids)} time series in {len(chunks)} parallel chunks")
+
+                    # Parallel processing with the external function
+                    predictions_list = []
+                    with ProcessPoolExecutor(max_workers=n_chunks) as executor:
+                        # Submit all jobs using the module-level function
+                        future_to_chunk = {
+                            executor.submit(fit_predict_sarima_chunk, chunk): i 
+                            for i, chunk in enumerate(chunks)
+                        }
+                        
+                        # Collect results
+                        for future in as_completed(future_to_chunk):
+                            chunk_id = future_to_chunk[future]
+                            try:
+                                result, returned_chunk_id = future.result()
+                                if len(result) > 0:
+                                    predictions_list.append(result)
+                                    logger.info(f"✅ Completed chunk {returned_chunk_id}")
+                            except Exception as e:
+                                logger.error(f"❌ Chunk {chunk_id} failed: {str(e)}")
+                                raise e
+
+                    # Combine predictions and continue with your existing code
+                    if predictions_list:
+                        predictions = pd.concat(predictions_list, ignore_index=True)
+                        logger.info(f"✅ Combined {len(predictions)} predictions from {len(predictions_list)} chunks")
+                    else:
+                        logger.error("❌ No predictions generated")
+                        raise RuntimeError("No predictions generated from SARIMA fitting")
+
+                    # Rest of your existing code for joining back to self.df
+                    predictions_pl = pl.from_pandas(predictions).select(["unique_id", "AutoARIMA"])
+
+                    # Update the final mapping to use original_row_id
+                    predictions_mapped = (
+                        predictions_pl
+                        .with_columns(
+                            pl.col("unique_id").str.extract(r"row_(\d+)").cast(pl.Int32).alias("original_row_id")
+                        )
+                        .select(["original_row_id", "AutoARIMA"])
+                        .rename({"AutoARIMA": "quantity_tn_predicted_sarima_12m"})
+                    )
+
+                    # Join back using original_row_id (NO second with_row_index call)
+                    self.df = (
+                        self.df
+                        .join(predictions_mapped, on="original_row_id", how="left")
+                        .drop("original_row_id")  # Clean up the temporary column
+                        .with_columns([
+                            pl.col("quantity_tn_predicted_sarima_12m").cast(pl.Float64)
+                        ])
+                        .with_columns([
+                            pl.when(
+                                pl.col("quantity_tn_cumulative_mean").is_not_nan() & 
+                                pl.col("quantity_tn_cumulative_std").is_not_nan() & 
+                                pl.col("quantity_tn_standardized").is_not_nan() &
+                                pl.col("quantity_tn_predicted_sarima_12m").is_not_nan()
+                            ).then(
+                                ((pl.col("quantity_tn_predicted_sarima_12m") - pl.col("quantity_tn_cumulative_mean")) / pl.col("quantity_tn_cumulative_std"))
+                                - pl.col("quantity_tn_standardized")
+                            ).otherwise(pl.lit(None))
+                            .alias("quantity_target_sarima_12m_prediction")
+                        ])
+                    )
+
+                    logger.info("✅ 12 month SARIMA predictions added successfully using parallel processing.")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Error adding SARIMA features: {str(e)}")
+                    raise e
+        
     def prepare_features(self):
         """Complete feature preparation pipeline."""
         with mlflow.start_run(run_name="features_preparation"):
@@ -415,12 +419,12 @@ class LightGBMModel:
             logger.info("🔄 Starting feature preparation pipeline...")
 
             self._load_data()
-            self._add_extra_features()
-            self._identify_features()
             self._clip_extreme_values()
             self._flag_cherry_rows()
             self._flag_problematic_standardization()
             self._encode_categorical_features()
+            self._add_extra_features()
+            self._identify_features()
 
             # Log dataset with prepared features to MLflow
             temp_path = "/tmp/features_prepared_dataset.parquet"
