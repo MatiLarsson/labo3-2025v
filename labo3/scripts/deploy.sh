@@ -28,7 +28,13 @@ git add -A && git commit -m "Deploy $(date)" || true
 git push --set-upstream origin main 2>/dev/null || git push 2>/dev/null || echo "⚠️ Git push failed, continuing anyway"
 
 # Auth GCP
-gcloud auth activate-service-account --key-file=service-account.json --quiet 2>/dev/null
+if [ -f "../service-account.json" ]; then
+    echo "Service account file found, activating service account..."
+    gcloud auth activate-service-account --key-file=../service-account.json --quiet 2>/dev/null
+else
+    echo "No service account file found, using default VM credentials..."
+fi
+
 gcloud config set project $PROJECT_ID --quiet 2>/dev/null
 
 # Process and upload .env file
@@ -246,31 +252,232 @@ INSTANCE_ZONE=$(curl -s "http://metadata.google.internal/computeMetadata/v1/inst
 gcloud compute instances delete $INSTANCE_NAME --zone=$INSTANCE_ZONE --quiet || echo "⚠️ Could not delete instance"
 EOF
 
-# Create instance
-echo "🖥️ Creating instance"
-gcloud compute instances create $INSTANCE_NAME \
-    --zone=$WORKER_ZONE \
-    --machine-type=$MACHINE_TYPE \
-    --image-family=ubuntu-2204-lts \
-    --image-project=ubuntu-os-cloud \
-    --boot-disk-size=$BOOT_DISK_SIZE \
-    --boot-disk-type=$BOOT_DISK_TYPE \
-    --scopes=cloud-platform \
-    --preemptible \
-    --metadata-from-file startup-script=/tmp/startup.sh \
-    --metadata project-id=$PROJECT_ID,bucket-name=$BUCKET_NAME,script-name=$SCRIPT_NAME,repo-url=$REPO_URL \
-    2>&1 | grep -v "WARNING:" | grep -v "Some requests generated warnings:" | grep -v "Disk size.*is larger than image size" | grep -v "You might need to resize"
+# Create instance with zone fallback
+echo "🖥️ Creating instance with zone fallback..."
 
-if [ ${PIPESTATUS[0]} -eq 0 ]; then
-    echo "✅ Instance created successfully"
+# Extract region from worker zone
+REGION=$(echo $WORKER_ZONE | sed 's/-[a-z]$//')
+CURRENT_ZONE_SUFFIX=$(echo $WORKER_ZONE | sed 's/.*-//')
+
+# Define zone rotation: b->c->d->b...
+get_next_zone() {
+    local current_suffix="$1"
+    case $current_suffix in
+        "b") echo "c" ;;
+        "c") echo "d" ;;
+        "d") echo "b" ;;
+        *) echo "b" ;;  # Default fallback
+    esac
+}
+
+INSTANCE_CREATED=false
+ATTEMPT=1
+MAX_ATTEMPTS=10  # Prevent infinite loops
+CURRENT_ZONE=$WORKER_ZONE
+
+while [ $ATTEMPT -le $MAX_ATTEMPTS ] && [ "$INSTANCE_CREATED" = false ]; do
+    echo "🎯 Attempt $ATTEMPT: Trying zone $CURRENT_ZONE..."
+    
+    # Create the instance
+    CREATE_OUTPUT=$(gcloud compute instances create $INSTANCE_NAME \
+        --zone=$CURRENT_ZONE \
+        --machine-type=$MACHINE_TYPE \
+        --image-family=ubuntu-2204-lts \
+        --image-project=ubuntu-os-cloud \
+        --boot-disk-size=$BOOT_DISK_SIZE \
+        --boot-disk-type=$BOOT_DISK_TYPE \
+        --scopes=cloud-platform \
+        --preemptible \
+        --metadata-from-file startup-script=/tmp/startup.sh \
+        --metadata project-id=$PROJECT_ID,bucket-name=$BUCKET_NAME,script-name=$SCRIPT_NAME,repo-url=$REPO_URL \
+        2>&1)
+    
+    CREATE_EXIT_CODE=$?
+    
+    if [ $CREATE_EXIT_CODE -eq 0 ]; then
+        echo "✅ Instance created successfully in zone $CURRENT_ZONE"
+        # Update WORKER_ZONE to the successful zone for daemon monitoring
+        WORKER_ZONE=$CURRENT_ZONE
+        INSTANCE_CREATED=true
+        break
+    else
+        # Check if it's specifically a resource exhaustion error
+        if echo "$CREATE_OUTPUT" | grep -q "ZONE_RESOURCE_POOL_EXHAUSTED\|does not have enough resources\|currently unavailable"; then
+            echo "⚠️ Zone $CURRENT_ZONE has insufficient resources"
+            
+            # Get next zone in rotation
+            CURRENT_ZONE_SUFFIX=$(echo $CURRENT_ZONE | sed 's/.*-//')
+            NEXT_ZONE_SUFFIX=$(get_next_zone $CURRENT_ZONE_SUFFIX)
+            CURRENT_ZONE="${REGION}-${NEXT_ZONE_SUFFIX}"
+            
+            echo "🔄 Next attempt will try zone $CURRENT_ZONE"
+            
+            echo "⏳ Waiting 5 seconds before trying next zone..."
+            sleep 5
+        else
+            echo "❌ Instance creation failed in zone $CURRENT_ZONE with non-resource error:"
+            echo "$CREATE_OUTPUT"
+            echo "🛑 Stopping attempts due to non-resource related failure"
+            break
+        fi
+    fi
+    
+    ATTEMPT=$((ATTEMPT + 1))
+done
+
+if [ "$INSTANCE_CREATED" = true ]; then
+    # Filter out warnings from output
+    echo "$CREATE_OUTPUT" | grep -v "WARNING:" | grep -v "Some requests generated warnings:" | grep -v "Disk size.*is larger than image size" | grep -v "You might need to resize"
+    
     # Erase previous logs
     echo "🧹 Cleaning up previous logs..."
     gsutil -m rm -r gs://$BUCKET_NAME/run_logs/ 2>/dev/null || echo "📂 No previous results to clean"
-    # Monitor instance
+    
+    # Monitor instance (note: WORKER_ZONE is now updated to the successful zone)
     echo "📊 Monitor: gcloud compute ssh $INSTANCE_NAME --zone=$WORKER_ZONE --command='sudo tmux attach -t ml'"
     echo "📁 Logs will be uploaded to gs://$BUCKET_NAME/run_logs/ even if preempted"
+
+    # Start daemon on node0 to monitor worker instance
+    echo "🤖 Starting daemon on node0 to monitor worker instance..."
+    
+    # Create daemon script
+    cat > /tmp/daemon.sh << 'DAEMON_EOF'
+#!/bin/bash
+set -e
+
+# Get metadata from startup
+PROJECT_ID="$1"
+BUCKET_NAME="$2"
+INSTANCE_NAME="$3"
+WORKER_ZONE="$4"
+REPO_URL="$5"
+
+echo "🤖 Daemon started for monitoring instance: $INSTANCE_NAME"
+
+# Create log function
+log_daemon() {
+    local message="$1"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "[$timestamp] $message"
+    echo "[$timestamp] $message" >> /tmp/daemon.log
+    
+    # Upload log to bucket
+    gsutil cp /tmp/daemon.log gs://$BUCKET_NAME/daemon_logs/daemon_$(date '+%Y%m%d').log 2>/dev/null || true
+}
+
+log_daemon "🚀 Daemon initialized for instance $INSTANCE_NAME"
+
+# Setup repository
+if [ ! -d "/tmp/daemon_repo" ]; then
+    log_daemon "📥 Cloning repository..."
+    git clone $REPO_URL /tmp/daemon_repo 2>/dev/null || log_daemon "⚠️ Repository clone failed"
 else
-    echo "❌ Instance creation failed"
+    log_daemon "🔄 Updating repository..."
+    cd /tmp/daemon_repo && git fetch origin && git reset --hard origin/main 2>/dev/null || log_daemon "⚠️ Repository update failed"
+fi
+
+# Download .env file to correct location
+log_daemon "📄 Downloading .env file..."
+mkdir -p /tmp/daemon_repo/labo3
+gsutil cp gs://$BUCKET_NAME/config/.env /tmp/daemon_repo/labo3/.env 2>/dev/null || log_daemon "⚠️ Could not download .env file"
+
+# Main monitoring loop
+while true; do
+    log_daemon "🔍 Checking instance status..."
+    
+    # Check if instance exists in any zone in the region and get its status
+    REGION=$(echo $WORKER_ZONE | sed 's/-[a-z]$//')
+    INSTANCE_INFO=$(gcloud compute instances list --filter="name:$INSTANCE_NAME" --format="value(status,zone)" 2>/dev/null | head -1)
+
+    if [ ! -z "$INSTANCE_INFO" ]; then
+        INSTANCE_STATUS=$(echo "$INSTANCE_INFO" | awk '{print $1}')
+        ACTUAL_ZONE=$(echo "$INSTANCE_INFO" | awk '{print $2}' | sed 's|.*/||')
+        log_daemon "🔍 Found instance in zone: $ACTUAL_ZONE"
+        # Update WORKER_ZONE to the actual zone where instance was found
+        WORKER_ZONE=$ACTUAL_ZONE
+    else
+        INSTANCE_STATUS="NOT_FOUND"
+    fi
+    
+    case $INSTANCE_STATUS in
+        "RUNNING")
+            log_daemon "✅ Instance is running normally"
+            ;;
+        "TERMINATED")
+            # Check if it was preempted
+            PREEMPTED=$(gcloud compute instances describe $INSTANCE_NAME --zone=$WORKER_ZONE --format="value(scheduling.preemptible,lastStopTimestamp)" 2>/dev/null || echo "")
+            
+            if echo "$PREEMPTED" | grep -q "True"; then
+                log_daemon "⚠️ Instance was preempted in zone $WORKER_ZONE - restarting..."
+                
+                # Delete the terminated instance first
+                gcloud compute instances delete $INSTANCE_NAME --zone=$WORKER_ZONE --quiet 2>/dev/null || log_daemon "⚠️ Could not delete terminated instance"
+                
+                # Wait a bit for cleanup
+                sleep 30
+                
+                # Restart by running deploy.sh from correct location
+                cd /tmp/daemon_repo/labo3
+                log_daemon "🔄 Restarting instance via scripts/deploy.sh..."
+                bash scripts/deploy.sh 2>&1 | while IFS= read -r line; do
+                    log_daemon "DEPLOY: $line"
+                done
+                
+                log_daemon "✅ Instance restart initiated"
+            else
+                log_daemon "🛑 Instance was stopped/deleted manually - not restarting"
+                break
+            fi
+            ;;
+        "NOT_FOUND")
+            log_daemon "❌ Instance not found - stopping daemon"
+            break
+            ;;
+        *)
+            log_daemon "ℹ️ Instance status: $INSTANCE_STATUS - waiting..."
+            ;;
+    esac
+    
+    # Wait 5 minutes before next check
+    sleep 300
+done
+
+log_daemon "🏁 Daemon monitoring ended for instance $INSTANCE_NAME"
+DAEMON_EOF
+
+    # Clean up previous daemon logs
+    echo "🧹 Cleaning up previous daemon logs..."
+    gsutil -m rm -r gs://$BUCKET_NAME/daemon_logs/ 2>/dev/null || echo "📂 No previous daemon logs to clean"
+    
+    # Start daemon on node0 in background
+    echo "🚀 Starting daemon on node0..."
+    gcloud compute ssh node0 --zone=$NODE0_ZONE --command="
+        # Kill any existing daemon processes
+        pkill -f 'daemon.sh' 2>/dev/null || true
+        
+        # Setup GCP auth (using default VM credentials)
+        gcloud config set project $PROJECT_ID --quiet
+        
+        # Start new daemon in background with nohup
+        nohup bash -c '
+            # Copy daemon script
+            cat > /tmp/daemon.sh << \"DAEMON_SCRIPT_EOF\"
+$(cat /tmp/daemon.sh)
+DAEMON_SCRIPT_EOF
+            chmod +x /tmp/daemon.sh
+            
+            # Run daemon with parameters
+            /tmp/daemon.sh \"$PROJECT_ID\" \"$BUCKET_NAME\" \"$INSTANCE_NAME\" \"$WORKER_ZONE\" \"$REPO_URL\" > /tmp/daemon_output.log 2>&1
+        ' &
+        
+        echo \"✅ Daemon started successfully\"
+    " 2>/dev/null || echo "⚠️ Could not start daemon on node0"
+    
+    echo "🤖 Daemon monitoring active - logs available at gs://$BUCKET_NAME/daemon_logs/"
+    
+else
+    echo "❌ Failed to create instance after $((ATTEMPT-1)) attempts"
+    echo "🛑 Last attempted zone: $CURRENT_ZONE"
     exit 1
 fi
 
