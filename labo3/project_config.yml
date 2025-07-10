@@ -60,7 +60,7 @@ dataset:
     - descripcion
   dataset_name: "dataset.parquet"
   clipping_threshold: 1e7  # Extreme value clipping threshold
-  add_12m_sarima_features: false  # Add SARIMA features trained on 12 months of data with a 12-month seasonal cycle
+  add_12m_sarima_features: true  # Add SARIMA features trained on 12 months of data with a 12-month seasonal cycle
 
 strategy:
   test_month: 201910 # int
