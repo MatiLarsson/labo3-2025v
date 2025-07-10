@@ -475,29 +475,29 @@ DAEMON_EOF
     echo "🧹 Cleaning up previous daemon logs..."
     gsutil -m rm -r gs://$BUCKET_NAME/daemon_logs/ 2>/dev/null || echo "📂 No previous daemon logs to clean"
     
-    # Start daemon on node0 in background
+    # Upload daemon script to bucket, then download and run on node0
     echo "🚀 Starting daemon on node0..."
+    
+    # Upload the daemon script to the bucket
+    gsutil cp /tmp/daemon.sh gs://$BUCKET_NAME/scripts/daemon.sh
+    
+    # Simple startup command without complex heredocs
     gcloud compute ssh node0 --zone=$NODE0_ZONE --command="
         # Kill any existing daemon processes
         pkill -f 'daemon.sh' 2>/dev/null || true
         
-        # Setup GCP auth (using default VM credentials)
+        # Setup GCP auth
         gcloud config set project $PROJECT_ID --quiet
         
-        # Start new daemon in background with nohup
-        nohup bash -c '
-            # Copy daemon script
-            cat > /tmp/daemon.sh << \"DAEMON_SCRIPT_EOF\"
-$(cat /tmp/daemon.sh)
-DAEMON_SCRIPT_EOF
-            chmod +x /tmp/daemon.sh
-            
-            # Run daemon with parameters
-            /tmp/daemon.sh \"$PROJECT_ID\" \"$BUCKET_NAME\" \"$INSTANCE_NAME\" \"$WORKER_ZONE\" \"$REPO_URL\" > /tmp/daemon_output.log 2>&1
-        ' &
+        # Download daemon script from bucket
+        gsutil cp gs://$BUCKET_NAME/scripts/daemon.sh /tmp/daemon.sh
+        chmod +x /tmp/daemon.sh
         
-        echo \"✅ Daemon started successfully\"
-    " 2>/dev/null || echo "⚠️ Could not start daemon on node0"
+        # Start daemon in background
+        nohup /tmp/daemon.sh '$PROJECT_ID' '$BUCKET_NAME' '$INSTANCE_NAME' '$WORKER_ZONE' '$REPO_URL' > /tmp/daemon_output.log 2>&1 &
+        
+        echo 'Daemon started successfully'
+    " || echo "⚠️ Could not start daemon on node0"
     
     echo "🤖 Daemon monitoring active - logs available at gs://$BUCKET_NAME/daemon_logs/"
     
