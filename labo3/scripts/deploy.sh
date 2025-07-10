@@ -354,16 +354,42 @@ REPO_URL="$5"
 
 echo "🤖 Daemon started for monitoring instance: $INSTANCE_NAME"
 
-# Create log function
+# Create log function with immediate upload for critical messages
 log_daemon() {
     local message="$1"
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     echo "[$timestamp] $message"
     echo "[$timestamp] $message" >> /tmp/daemon.log
     
-    # Upload log to bucket
-    gsutil cp /tmp/daemon.log gs://$BUCKET_NAME/daemon_logs/daemon_$(date '+%Y%m%d').log 2>/dev/null || true
+    # Upload immediately for critical events (this replaces the file in the bucket)
+    if echo "$message" | grep -q "🚀\|⚠️\|❌\|✅.*restart\|🔄.*deploy"; then
+        gsutil cp /tmp/daemon.log gs://$BUCKET_NAME/daemon_logs/daemon_current.log 2>/dev/null || true
+    fi
 }
+
+# Background function to upload logs every 5 minutes
+periodic_log_upload() {
+    while true; do
+        sleep 300  # 5 minutes
+        if [ -f /tmp/daemon.log ]; then
+            # Always upload to the same file name - this replaces the content in the bucket
+            gsutil cp /tmp/daemon.log gs://$BUCKET_NAME/daemon_logs/daemon_current.log 2>/dev/null || true
+        fi
+    done
+} &
+
+# Store the background process PID for cleanup
+LOG_UPLOAD_PID=$!
+
+# Cleanup function to ensure final upload and kill background processes
+cleanup_daemon() {
+    echo "🏁 Daemon ending - final log upload..."
+    kill $LOG_UPLOAD_PID 2>/dev/null || true
+    gsutil cp /tmp/daemon.log gs://$BUCKET_NAME/daemon_logs/daemon_current.log 2>/dev/null || true
+}
+
+# Set trap for cleanup
+trap cleanup_daemon EXIT
 
 log_daemon "🚀 Daemon initialized for instance $INSTANCE_NAME"
 
