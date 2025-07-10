@@ -1,5 +1,6 @@
 #!/bin/bash
-# deploy.sh - Simple ML job deployment with preemption handling
+# deploy_from_daemon.sh - Deploy worker instance WITHOUT starting daemon
+# This script is called by the daemon when restarting preempted instances
 
 set -e
 
@@ -21,20 +22,9 @@ REPO_URL=$(yq '.repository.url' $CONFIG_FILE)
 BOOT_DISK_SIZE=$(yq '.jobs.boot_disk_size // "100GB"' $CONFIG_FILE)
 BOOT_DISK_TYPE=$(yq '.jobs.boot_disk_type // "pd-standard"' $CONFIG_FILE)
 
-echo "🚀 Deploying ML job: $INSTANCE_NAME"
+echo "🔄 Restarting ML job from daemon: $INSTANCE_NAME"
 
-# Push code
-git add -A && git commit -m "Deploy $(date)" || true
-git push --set-upstream origin main 2>/dev/null || git push 2>/dev/null || echo "⚠️ Git push failed, continuing anyway"
-
-# Auth GCP
-if [ -f "../service-account.json" ]; then
-    echo "Service account file found, activating service account..."
-    gcloud auth activate-service-account --key-file=../service-account.json --quiet 2>/dev/null
-else
-    echo "No service account file found, using default VM credentials..."
-fi
-
+# Auth GCP (daemon should already have this configured)
 gcloud config set project $PROJECT_ID --quiet 2>/dev/null
 
 # Process and upload .env file
@@ -51,7 +41,7 @@ fi
 # Overwrite .env with settings needed for GCP vms
 NODE0_IP=$(gcloud compute instances describe node0 --zone=$NODE0_ZONE --format="value(networkInterfaces[0].accessConfigs[0].natIP)")
 cat > .env.gcp << GCP_ENV_EOF
-# MLflow tracking server (set by deploy.sh)
+# MLflow tracking server (set by deploy_from_daemon.sh)
 MLFLOW_TRACKING_URI=http://$NODE0_IP:5000
 GCP_ENV_EOF
 
@@ -112,7 +102,7 @@ else
     echo "✅ No existing instance named '$INSTANCE_NAME' found"
 fi
 
-# Create startup script with preemption handling
+# Create startup script with preemption handling (same as original)
 cat > /tmp/startup.sh << 'EOF'
 #!/bin/bash
 set -e
@@ -252,7 +242,7 @@ INSTANCE_ZONE=$(curl -s "http://metadata.google.internal/computeMetadata/v1/inst
 gcloud compute instances delete $INSTANCE_NAME --zone=$INSTANCE_ZONE --quiet || echo "⚠️ Could not delete instance"
 EOF
 
-# Create instance with zone fallback
+# Create instance with zone fallback (same logic as original)
 echo "🖥️ Creating instance with zone fallback..."
 
 # Extract region from worker zone
@@ -329,177 +319,10 @@ if [ "$INSTANCE_CREATED" = true ]; then
     # Filter out warnings from output
     echo "$CREATE_OUTPUT" | grep -v "WARNING:" | grep -v "Some requests generated warnings:" | grep -v "Disk size.*is larger than image size" | grep -v "You might need to resize"
     
-    # Erase previous logs
-    echo "🧹 Cleaning up previous logs..."
-    gsutil -m rm -r gs://$BUCKET_NAME/run_logs/ 2>/dev/null || echo "📂 No previous results to clean"
-    
     # Monitor instance (note: WORKER_ZONE is now updated to the successful zone)
     echo "📊 Monitor: gcloud compute ssh $INSTANCE_NAME --zone=$WORKER_ZONE --command='sudo tmux attach -t ml'"
     echo "📁 Logs will be uploaded to gs://$BUCKET_NAME/run_logs/ even if preempted"
-
-    # Start daemon on node0 to monitor worker instance
-    echo "🤖 Starting daemon on node0 to monitor worker instance..."
-    
-    # Create daemon script
-    cat > /tmp/daemon.sh << 'DAEMON_EOF'
-#!/bin/bash
-set -e
-
-# Get metadata from startup
-PROJECT_ID="$1"
-BUCKET_NAME="$2"
-INSTANCE_NAME="$3"
-WORKER_ZONE="$4"
-REPO_URL="$5"
-
-echo "🤖 Daemon started for monitoring instance: $INSTANCE_NAME"
-
-# Create log function with immediate upload for critical messages
-log_daemon() {
-    local message="$1"
-    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    echo "[$timestamp] $message"
-    echo "[$timestamp] $message" >> /tmp/daemon.log
-    
-    # Upload immediately for critical events (this replaces the file in the bucket)
-    if echo "$message" | grep -q "🚀\|⚠️\|❌\|✅.*restart\|🔄.*deploy"; then
-        gsutil cp /tmp/daemon.log gs://$BUCKET_NAME/daemon_logs/daemon_current.log 2>/dev/null || true
-    fi
-}
-
-# Background function to upload logs every 5 minutes
-periodic_log_upload() {
-    while true; do
-        sleep 300  # 5 minutes
-        if [ -f /tmp/daemon.log ]; then
-            # Always upload to the same file name - this replaces the content in the bucket
-            gsutil cp /tmp/daemon.log gs://$BUCKET_NAME/daemon_logs/daemon_current.log 2>/dev/null || true
-        fi
-    done
-} &
-
-# Store the background process PID for cleanup
-LOG_UPLOAD_PID=$!
-
-# Cleanup function to ensure final upload and kill background processes
-cleanup_daemon() {
-    echo "🏁 Daemon ending - final log upload..."
-    kill $LOG_UPLOAD_PID 2>/dev/null || true
-    gsutil cp /tmp/daemon.log gs://$BUCKET_NAME/daemon_logs/daemon_current.log 2>/dev/null || true
-}
-
-# Set trap for cleanup
-trap cleanup_daemon EXIT
-
-log_daemon "🚀 Daemon initialized for instance $INSTANCE_NAME"
-
-# Setup repository
-if [ ! -d "/tmp/daemon_repo" ]; then
-    log_daemon "📥 Cloning repository..."
-    git clone $REPO_URL /tmp/daemon_repo 2>/dev/null || log_daemon "⚠️ Repository clone failed"
-else
-    log_daemon "🔄 Updating repository..."
-    cd /tmp/daemon_repo && git fetch origin && git reset --hard origin/main 2>/dev/null || log_daemon "⚠️ Repository update failed"
-fi
-
-# Download .env file to correct location
-log_daemon "📄 Downloading .env file..."
-mkdir -p /tmp/daemon_repo/labo3
-gsutil cp gs://$BUCKET_NAME/config/.env /tmp/daemon_repo/labo3/.env 2>/dev/null || log_daemon "⚠️ Could not download .env file"
-
-# Main monitoring loop
-while true; do
-    log_daemon "🔍 Checking instance status..."
-    
-    # Check if instance exists in any zone in the region and get its status
-    REGION=$(echo $WORKER_ZONE | sed 's/-[a-z]$//')
-    INSTANCE_INFO=$(gcloud compute instances list --filter="name:$INSTANCE_NAME" --format="value(status,zone)" 2>/dev/null | head -1)
-
-    if [ ! -z "$INSTANCE_INFO" ]; then
-        INSTANCE_STATUS=$(echo "$INSTANCE_INFO" | awk '{print $1}')
-        ACTUAL_ZONE=$(echo "$INSTANCE_INFO" | awk '{print $2}' | sed 's|.*/||')
-        log_daemon "🔍 Found instance in zone: $ACTUAL_ZONE"
-        # Update WORKER_ZONE to the actual zone where instance was found
-        WORKER_ZONE=$ACTUAL_ZONE
-    else
-        INSTANCE_STATUS="NOT_FOUND"
-    fi
-    
-    case $INSTANCE_STATUS in
-        "RUNNING")
-            log_daemon "✅ Instance is running normally"
-            ;;
-        "TERMINATED")
-            # Check if it was preempted
-            PREEMPTED=$(gcloud compute instances describe $INSTANCE_NAME --zone=$WORKER_ZONE --format="value(scheduling.preemptible,lastStopTimestamp)" 2>/dev/null || echo "")
-            
-            if echo "$PREEMPTED" | grep -q "True"; then
-                log_daemon "⚠️ Instance was preempted in zone $WORKER_ZONE - restarting..."
-                
-                # Delete the terminated instance first
-                gcloud compute instances delete $INSTANCE_NAME --zone=$WORKER_ZONE --quiet 2>/dev/null || log_daemon "⚠️ Could not delete terminated instance"
-                
-                # Wait a bit for cleanup
-                sleep 30
-                
-                # Restart by running deploy_from_daemon.sh from correct location
-                cd /tmp/daemon_repo/labo3
-                log_daemon "🔄 Restarting instance via scripts/deploy_from_daemon.sh..."
-                bash scripts/deploy_from_daemon.sh 2>&1 | while IFS= read -r line; do
-                    log_daemon "DEPLOY: $line"
-                done
-                
-                log_daemon "✅ Instance restart initiated"
-            else
-                log_daemon "🛑 Instance was stopped/deleted manually - not restarting"
-                break
-            fi
-            ;;
-        "NOT_FOUND")
-            log_daemon "❌ Instance not found - stopping daemon"
-            break
-            ;;
-        *)
-            log_daemon "ℹ️ Instance status: $INSTANCE_STATUS - waiting..."
-            ;;
-    esac
-    
-    # Wait 5 minutes before next check
-    sleep 300
-done
-
-log_daemon "🏁 Daemon monitoring ended for instance $INSTANCE_NAME"
-DAEMON_EOF
-
-    # Clean up previous daemon logs
-    echo "🧹 Cleaning up previous daemon logs..."
-    gsutil -m rm -r gs://$BUCKET_NAME/daemon_logs/ 2>/dev/null || echo "📂 No previous daemon logs to clean"
-    
-    # Start daemon on node0 in background
-    echo "🚀 Starting daemon on node0..."
-    gcloud compute ssh node0 --zone=$NODE0_ZONE --command="
-        # Kill any existing daemon processes
-        pkill -f 'daemon.sh' 2>/dev/null || true
-        
-        # Setup GCP auth (using default VM credentials)
-        gcloud config set project $PROJECT_ID --quiet
-        
-        # Start new daemon in background with nohup
-        nohup bash -c '
-            # Copy daemon script
-            cat > /tmp/daemon.sh << \"DAEMON_SCRIPT_EOF\"
-$(cat /tmp/daemon.sh)
-DAEMON_SCRIPT_EOF
-            chmod +x /tmp/daemon.sh
-            
-            # Run daemon with parameters
-            /tmp/daemon.sh \"$PROJECT_ID\" \"$BUCKET_NAME\" \"$INSTANCE_NAME\" \"$WORKER_ZONE\" \"$REPO_URL\" > /tmp/daemon_output.log 2>&1
-        ' &
-        
-        echo \"✅ Daemon started successfully\"
-    " 2>/dev/null || echo "⚠️ Could not start daemon on node0"
-    
-    echo "🤖 Daemon monitoring active - logs available at gs://$BUCKET_NAME/daemon_logs/"
+    echo "🔄 Instance restarted by daemon - no new daemon started"
     
 else
     echo "❌ Failed to create instance after $((ATTEMPT-1)) attempts"
