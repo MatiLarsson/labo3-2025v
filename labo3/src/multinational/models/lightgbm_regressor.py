@@ -419,12 +419,13 @@ class LightGBMModel:
             logger.info("🔄 Starting feature preparation pipeline...")
 
             self._load_data()
+            self._identify_features() # Needed for _clip_extreme_values
             self._clip_extreme_values()
             self._flag_cherry_rows()
             self._flag_problematic_standardization()
             self._encode_categorical_features()
             self._add_extra_features()
-            self._identify_features()
+            self._identify_features() # Need to reset due to added extra features
 
             # Log dataset with prepared features to MLflow
             temp_path = "/tmp/features_prepared_dataset.parquet"
