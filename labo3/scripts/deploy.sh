@@ -272,7 +272,7 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ] && [ "$INSTANCE_CREATED" = false ]; do
         --preemptible \
         --metadata-from-file startup-script=/tmp/startup.sh \
         --metadata project-id=$PROJECT_ID,bucket-name=$BUCKET_NAME,script-name=$SCRIPT_NAME,repo-url=$REPO_URL \
-        2>&1)
+        2>/dev/null)
     
     CREATE_EXIT_CODE=$?
 
@@ -407,6 +407,7 @@ MONITOR_SCRIPT_EOF
     # Create simple daemon script
     cat > /tmp/monitor_daemon.sh << 'DAEMON_SCRIPT_EOF'
 #!/bin/bash
+set -x  # Add this line for debugging
 if ! command -v tmux &> /dev/null; then
     echo "📦 Installing tmux on node0..."
     sudo apt-get update -qq && sudo apt-get install -y tmux
@@ -435,7 +436,7 @@ DAEMON_SCRIPT_EOF
     gcloud compute scp /tmp/monitor_daemon.sh node0:/tmp/monitor_daemon.sh --zone=$NODE0_ZONE --quiet
     
     echo "🤖 Starting monitoring daemon on node0..."
-    gcloud compute ssh node0 --zone=$NODE0_ZONE --command="chmod +x /tmp/monitor_daemon.sh && /tmp/monitor_daemon.sh"
+    gcloud compute ssh node0 --zone=$NODE0_ZONE --command="chmod +x /tmp/monitor_daemon.sh /tmp/monitor_script.sh && /tmp/monitor_daemon.sh"
     
     # Monitor instances
     echo "📊 Monitor: gcloud compute ssh $INSTANCE_NAME --zone=$WORKER_ZONE --command='sudo tmux attach -t ml'"
