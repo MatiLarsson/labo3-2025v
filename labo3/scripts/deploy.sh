@@ -90,7 +90,7 @@ if [ ! -z "$WORKER_EXISTS" ]; then
     EXISTING_ZONE=$(echo "$WORKER_EXISTS" | awk '{print $2}')
     EXISTING_NAME=$(echo "$WORKER_EXISTS" | awk '{print $1}')
     
-    echo "🗑️ Deleting existing instance '$EXISTING_NAME' in zone $EXISTING_ZONE"
+    echo "🗑️ Deleting existing instance '$EXISTING_NAME' in zone $EXISTING_ZONE..."
 
     gcloud compute instances delete $EXISTING_NAME --zone=$EXISTING_ZONE --quiet 2>/dev/null || echo "⚠️ Could not delete $EXISTING_NAME instance"
     
@@ -148,20 +148,15 @@ cleanup_and_upload() {
     DEPLOY_ID=$(date '+%Y%m%d_%H%M%S')
     INSTANCE_NAME=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/name" -H "Metadata-Flavor: Google")
     
+    # Create a status file indicating the job was interrupted
+    echo "Job interrupted at $(date) on instance $INSTANCE_NAME" > /tmp/interrupted_status.txt
+    gsutil cp /tmp/interrupted_status.txt gs://$BUCKET_NAME/run_logs/interrupted_${DEPLOY_ID}.txt 2>/dev/null || echo "⚠️ Could not upload status"
+    
     # Upload run.log if it exists
     if [ -f "run.log" ]; then
         gsutil cp run.log gs://$BUCKET_NAME/run_logs/run_${DEPLOY_ID}_interrupted.log 2>/dev/null || echo "⚠️ Could not upload run.log"
         echo "✅ Uploaded interrupted run log"
     fi
-    
-    # Upload any other relevant files
-    if [ -f "error.log" ]; then
-        gsutil cp error.log gs://$BUCKET_NAME/run_logs/error_${DEPLOY_ID}.log 2>/dev/null || echo "⚠️ Could not upload error.log"
-    fi
-    
-    # Create a status file indicating the job was interrupted
-    echo "Job interrupted at $(date) on instance $INSTANCE_NAME" > /tmp/interrupted_status.txt
-    gsutil cp /tmp/interrupted_status.txt gs://$BUCKET_NAME/run_logs/interrupted_${DEPLOY_ID}.txt 2>/dev/null || echo "⚠️ Could not upload status"
     
     echo "🔄 Cleanup completed"
     exit 0
@@ -205,23 +200,8 @@ tmux send-keys -t ml "uv sync" Enter
 tmux send-keys -t ml "echo '💾 Final disk check before ML script:' && df -h /" Enter
 
 # Start the ML script with better error handling
-tmux send-keys -t ml "python scripts/$SCRIPT_NAME 2>&1 | tee run.log; echo \$? > /tmp/ml_exit_code" Enter
-tmux send-keys -t ml "echo ML_SCRIPT_DONE > /tmp/ml_done" Enter
+tmux send-keys -t ml "python scripts/$SCRIPT_NAME 2>&1 | tee run.log; echo \$? > /tmp/ml_exit_code; echo ML_SCRIPT_DONE > /tmp/ml_done" Enter
 
-echo "Waiting for ML script to complete..."
-while [ ! -f /tmp/ml_done ]; do 
-    # Check if we're being preempted while waiting
-    if curl -s "http://metadata.google.internal/computeMetadata/v1/instance/preempted" -H "Metadata-Flavor: Google" | grep -q "TRUE"; then
-        echo "⚠️ PREEMPTION DURING EXECUTION - Starting cleanup..."
-        cleanup_and_upload
-        exit 0
-    fi
-    
-    echo "Still waiting... $(date)"
-    sleep 30
-done
-
-echo "ML script completed, uploading results..."
 
 # Clean up the background preemption monitor
 kill $MONITOR_PID 2>/dev/null || true
@@ -280,6 +260,7 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ] && [ "$INSTANCE_CREATED" = false ]; do
     
     # Create the instance (disable exit on error for this command)
     set +e
+
     CREATE_OUTPUT=$(gcloud compute instances create $INSTANCE_NAME \
         --zone=$CURRENT_ZONE \
         --machine-type=$MACHINE_TYPE \
@@ -294,6 +275,7 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ] && [ "$INSTANCE_CREATED" = false ]; do
         2>&1)
     
     CREATE_EXIT_CODE=$?
+
     set -e  # Re-enable exit on error
     
     if [ $CREATE_EXIT_CODE -eq 0 ]; then
@@ -334,53 +316,113 @@ if [ "$INSTANCE_CREATED" = true ]; then
     echo "📝 Creating monitoring daemon script..."
     cat > /tmp/monitor_daemon.sh << 'DAEMON_SCRIPT_EOF'
 #!/bin/bash
-# Kill any previous daemon monitoring this job
-pkill -f 'monitor_ml_job_worker' 2>/dev/null || true
+# Install tmux if not already installed
+if ! command -v tmux &> /dev/null; then
+    echo "📦 Installing tmux on node0..."
+    sudo apt-get update -qq && sudo apt-get install -y tmux
+fi
 
-PROJECT_ID="labo3-464122"
-BUCKET_NAME="labo3-bucket-464122"
-INSTANCE_NAME="worker"
-WORKER_ZONE="us-east1-b"
-MACHINE_TYPE="n2-highmem-64"
-BOOT_DISK_SIZE="2000GB"
-BOOT_DISK_TYPE="pd-standard"
-SCRIPT_NAME="train.py"
-REPO_URL="your-repo-url"
+# Kill any previous monitor tmux session if it exists
+tmux kill-session -t monitor 2>/dev/null || echo "No existing monitor session to kill"
+
+PROJECT_ID="$PROJECT_ID"
+BUCKET_NAME="$BUCKET_NAME"
+INSTANCE_NAME="$INSTANCE_NAME"
+WORKER_ZONE="$WORKER_ZONE"
+MACHINE_TYPE="$MACHINE_TYPE"
+BOOT_DISK_SIZE="$BOOT_DISK_SIZE"
+BOOT_DISK_TYPE="$BOOT_DISK_TYPE"
+SCRIPT_NAME="$SCRIPT_NAME"
+REPO_URL="$REPO_URL"
 
 gcloud config set project $PROJECT_ID --quiet
 
-nohup bash -c 'export JOB_NAME="monitor_ml_job_worker"
-while true; do
-    if gsutil -q stat gs://labo3-bucket-464122/run_logs/completed_*.txt 2>/dev/null; then
-        echo "$(date): Job completed - stopping daemon"; break
+# Create new tmux session for monitoring
+tmux new-session -d -s monitor
+
+# Send commands to the monitor session
+tmux send-keys -t monitor 'export JOB_NAME="monitor_ml_job_worker"' Enter
+tmux send-keys -t monitor 'echo "🤖 Starting ML job monitoring daemon at \$(date)"' Enter
+tmux send-keys -t monitor 'echo "📊 Monitoring bucket: gs://$BUCKET_NAME/run_logs/"' Enter
+
+# Main monitoring loop
+# Main monitoring loop - send as single command
+tmux send-keys -t monitor 'while true; do
+    echo "🔍 $(date): Checking job status..."
+    
+    if gsutil -q stat gs://$BUCKET_NAME/run_logs/completed_*.txt 2>/dev/null; then
+        echo "✅ $(date): Job completed successfully - stopping daemon"
+        break
     fi
     
-    if gsutil -q stat gs://labo3-bucket-464122/run_logs/interrupted_*.txt 2>/dev/null; then
-        echo "$(date): Job interrupted - restarting..."
-        while gcloud compute instances list --filter="name:worker" --format="value(name)" | grep -q "worker"; do
+    if gsutil -q stat gs://$BUCKET_NAME/run_logs/interrupted_*.txt 2>/dev/null; then
+        echo "⚠️ $(date): Job interrupted - initiating restart sequence..."
+        
+        # Actively delete the worker instance if it still exists
+        echo "🗑️ $(date): Force deleting worker instance..."
+        gcloud compute instances delete $INSTANCE_NAME --zone=$WORKER_ZONE --quiet 2>/dev/null || echo "Instance already deleted or deletion failed"
+        
+        # Wait for worker instance to be fully deleted
+        echo "⏳ $(date): Waiting for worker instance deletion..."
+        while gcloud compute instances list --filter="name:$INSTANCE_NAME" --format="value(name)" | grep -q "$INSTANCE_NAME"; do
+            echo "⏳ $(date): Still waiting for $INSTANCE_NAME deletion..."
             sleep 30
         done
+        echo "✅ $(date): Worker instance deleted"
         
-        # Keep trying to create instance until successful
-        while true; do
-            if gcloud compute instances create worker --zone=us-east1-b --machine-type=n2-highmem-64 --image-family=ubuntu-2204-lts --image-project=ubuntu-os-cloud --boot-disk-size=2000GB --boot-disk-type=pd-standard --scopes=cloud-platform --preemptible --metadata-from-file startup-script=/tmp/startup.sh --metadata project-id=labo3-464122,bucket-name=labo3-bucket-464122,script-name=train.py,repo-url=your-repo-url; then
-                echo "$(date): Instance recreated successfully"
-                gsutil -m rm gs://labo3-bucket-464122/run_logs/interrupted_*.txt 2>/dev/null || true
-                echo "Instance worker recreated at $(date)" > /tmp/recreated_flag.txt
-                gsutil cp /tmp/recreated_flag.txt gs://labo3-bucket-464122/run_logs/recreated_at_$(date +%Y%m%d_%H%M%S).txt 2>/dev/null || true
-                rm -f /tmp/recreated_flag.txt
-                break
+        # Clear interrupted flag
+        echo "🧹 $(date): Clearing interrupted flag..."
+        gsutil -m rm gs://$BUCKET_NAME/run_logs/interrupted_*.txt 2>/dev/null || echo "No interrupted flags to clear"
+        
+        # Recreate instance with retry logic
+        echo "🔄 $(date): Recreating worker instance..."
+        RECREATE_SUCCESS=false
+        RECREATE_ATTEMPT=1
+        
+        while [ $RECREATE_ATTEMPT -le 50 ] && [ "$RECREATE_SUCCESS" = false ]; do
+            echo "🎯 $(date): Recreate attempt $RECREATE_ATTEMPT in zone $WORKER_ZONE..."
+            
+            if gcloud compute instances create $INSTANCE_NAME \
+                --zone=$WORKER_ZONE \
+                --machine-type=$MACHINE_TYPE \
+                --image-family=ubuntu-2204-lts \
+                --image-project=ubuntu-os-cloud \
+                --boot-disk-size=$BOOT_DISK_SIZE \
+                --boot-disk-type=$BOOT_DISK_TYPE \
+                --scopes=cloud-platform \
+                --preemptible \
+                --metadata-from-file startup-script=/tmp/startup.sh \
+                --metadata project-id=$PROJECT_ID,bucket-name=$BUCKET_NAME,script-name=$SCRIPT_NAME,repo-url=$REPO_URL 2>/dev/null; then
+                
+                echo "✅ $(date): Instance recreated successfully"
+                RECREATE_SUCCESS=true
+                
+                # Upload recreated flag
+                echo "Instance $INSTANCE_NAME recreated at $(date)" > /tmp/recreated_status.txt
+                gsutil cp /tmp/recreated_status.txt gs://$BUCKET_NAME/run_logs/recreated_$(date +%Y%m%d_%H%M%S).txt 2>/dev/null || echo "Could not upload recreated status"
+                rm -f /tmp/recreated_status.txt
             else
-                echo "$(date): Instance creation failed, retrying in 60 seconds..."
+                echo "❌ $(date): Instance creation failed, retrying in 60 seconds..."
                 sleep 60
+                RECREATE_ATTEMPT=$((RECREATE_ATTEMPT + 1))
             fi
         done
+        
+        if [ "$RECREATE_SUCCESS" = false ]; then
+            echo "💥 $(date): Failed to recreate instance after 50 attempts"
+        fi
     fi
     
+    # Upload current monitor logs to bucket
+    echo "📤 $(date): Uploading monitor logs..."
+    tmux capture-pane -t monitor -p > /tmp/monitor_session.log
+    echo "💤 $(date): Sleeping for 5 minutes..."
+    gsutil cp /tmp/monitor_session.log gs://$BUCKET_NAME/run_logs/monitor.log 2>/dev/null || echo "Could not upload monitor logs"
     sleep 300
-done' > /tmp/monitor.log 2>&1 &
+done' Enter
 
-echo "Daemon started with PID $!"
+echo "🤖 Monitoring daemon started in tmux session 'monitor'"
+echo "📊 View logs: gcloud compute ssh node0 --zone=$NODE0_ZONE --command='tmux attach -t monitor'"
 DAEMON_SCRIPT_EOF
 
     # Configure SSH for the script session
