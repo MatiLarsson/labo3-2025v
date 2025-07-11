@@ -414,7 +414,7 @@ fi
 
 sudo tmux kill-session -t monitor 2>/dev/null || echo "No existing monitor session to kill"
 
-sudo source /tmp/monitor_config.env
+source /tmp/monitor_config.env
 gcloud config set project $PROJECT_ID --quiet
 
 sudo tmux new-session -d -s monitor
@@ -426,7 +426,7 @@ DAEMON_SCRIPT_EOF
 
     # Configure SSH for the script session
     echo "🔧 Configuring SSH..."
-    gcloud compute config-ssh --quiet
+    gcloud compute config-ssh --quiet 2>/dev/null
 
     # Copy all files to node0
     echo "📤 Copying monitoring files to node0..."
