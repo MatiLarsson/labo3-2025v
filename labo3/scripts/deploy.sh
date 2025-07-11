@@ -330,51 +330,72 @@ if [ "$INSTANCE_CREATED" = true ]; then
     echo "📤 Copying startup script to node0..."
     gcloud compute scp /tmp/startup.sh node0:/tmp/startup.sh --zone=$NODE0_ZONE --quiet
 
+    # Create monitoring daemon script
+    echo "📝 Creating monitoring daemon script..."
+    cat > /tmp/monitor_daemon.sh << 'DAEMON_SCRIPT_EOF'
+#!/bin/bash
+# Kill any previous daemon monitoring this job
+pkill -f 'monitor_ml_job_worker' 2>/dev/null || true
+
+PROJECT_ID="labo3-464122"
+BUCKET_NAME="labo3-bucket-464122"
+INSTANCE_NAME="worker"
+WORKER_ZONE="us-east1-b"
+MACHINE_TYPE="n2-highmem-64"
+BOOT_DISK_SIZE="2000GB"
+BOOT_DISK_TYPE="pd-standard"
+SCRIPT_NAME="train.py"
+REPO_URL="your-repo-url"
+
+gcloud config set project $PROJECT_ID --quiet
+
+nohup bash -c 'export JOB_NAME="monitor_ml_job_worker"
+while true; do
+    if gsutil -q stat gs://labo3-bucket-464122/run_logs/completed_*.txt 2>/dev/null; then
+        echo "$(date): Job completed - stopping daemon"; break
+    fi
+    
+    if gsutil -q stat gs://labo3-bucket-464122/run_logs/interrupted_*.txt 2>/dev/null; then
+        echo "$(date): Job interrupted - restarting..."
+        while gcloud compute instances list --filter="name:worker" --format="value(name)" | grep -q "worker"; do
+            sleep 30
+        done
+        
+        # Keep trying to create instance until successful
+        while true; do
+            if gcloud compute instances create worker --zone=us-east1-b --machine-type=n2-highmem-64 --image-family=ubuntu-2204-lts --image-project=ubuntu-os-cloud --boot-disk-size=2000GB --boot-disk-type=pd-standard --scopes=cloud-platform --preemptible --metadata-from-file startup-script=/tmp/startup.sh --metadata project-id=labo3-464122,bucket-name=labo3-bucket-464122,script-name=train.py,repo-url=your-repo-url; then
+                echo "$(date): Instance recreated successfully"
+                gsutil -m rm gs://labo3-bucket-464122/run_logs/interrupted_*.txt 2>/dev/null || true
+                echo "Instance worker recreated at $(date)" > /tmp/recreated_flag.txt
+                gsutil cp /tmp/recreated_flag.txt gs://labo3-bucket-464122/run_logs/recreated_at_$(date +%Y%m%d_%H%M%S).txt 2>/dev/null || true
+                rm -f /tmp/recreated_flag.txt
+                break
+            else
+                echo "$(date): Instance creation failed, retrying in 60 seconds..."
+                sleep 60
+            fi
+        done
+    fi
+    
+    sleep 300
+done' > /tmp/monitor.log 2>&1 &
+
+echo "Daemon started with PID $!"
+DAEMON_SCRIPT_EOF
+
     # Configure SSH for the script session
     echo "🔧 Configuring SSH..."
     gcloud compute config-ssh --quiet
 
-    # Start daemon on node0 to monitor instance
+    # Copy daemon script to node0 and execute it
+    echo "📤 Copying daemon script to node0..."
+    gcloud compute scp /tmp/monitor_daemon.sh node0:/tmp/monitor_daemon.sh --zone=$NODE0_ZONE --quiet
+    
     echo "🤖 Starting monitoring daemon on node0..."
-    gcloud compute ssh node0 --zone=$NODE0_ZONE --command="
-    # Kill any previous daemon monitoring this job
-    pkill -f 'monitor_ml_job_$INSTANCE_NAME' 2>/dev/null || true
-    gcloud config set project $PROJECT_ID --quiet
-
-    nohup bash -c 'export JOB_NAME=\"monitor_ml_job_$INSTANCE_NAME\"
-    while true; do
-        if gsutil -q stat gs://$BUCKET_NAME/run_logs/completed_*.txt 2>/dev/null; then
-            echo \"\$(date): Job completed - stopping daemon\"; break
-        fi
-        
-        if gsutil -q stat gs://$BUCKET_NAME/run_logs/interrupted_*.txt 2>/dev/null; then
-            echo \"\$(date): Job interrupted - restarting...\"
-            while gcloud compute instances list --filter=\"name:$INSTANCE_NAME\" --format=\"value(name)\" | grep -q \"$INSTANCE_NAME\"; do
-                sleep 30
-            done
-            
-            # Keep trying to create instance until successful
-            while true; do
-                if gcloud compute instances create $INSTANCE_NAME --zone=$WORKER_ZONE --machine-type=$MACHINE_TYPE --image-family=ubuntu-2204-lts --image-project=ubuntu-os-cloud --boot-disk-size=$BOOT_DISK_SIZE --boot-disk-type=$BOOT_DISK_TYPE --scopes=cloud-platform --preemptible --metadata-from-file startup-script=/tmp/startup.sh --metadata project-id=$PROJECT_ID,bucket-name=$BUCKET_NAME,script-name=$SCRIPT_NAME,repo-url=$REPO_URL; then
-                    echo \"\$(date): Instance recreated successfully\"
-                    gsutil -m rm gs://$BUCKET_NAME/run_logs/interrupted_*.txt 2>/dev/null || true
-                    # Leave recreation flag
-                    echo \"Instance $INSTANCE_NAME recreated at \$(date)\" > /tmp/recreated_flag.txt
-                    gsutil cp /tmp/recreated_flag.txt gs://$BUCKET_NAME/run_logs/recreated_at_\$(date +%Y%m%d_%H%M%S).txt 2>/dev/null || true
-                    rm -f /tmp/recreated_flag.txt
-                    break
-                else
-                    echo \"\$(date): Instance creation failed, retrying in 60 seconds...\"
-                    sleep 60
-                fi
-            done
-        fi
-        
-        sleep 300
-    done' > /tmp/monitor.log 2>&1 &
-
-    echo \"Daemon started\"
-    "
+    gcloud compute ssh node0 --zone=$NODE0_ZONE --command="chmod +x /tmp/monitor_daemon.sh && /tmp/monitor_daemon.sh"
+    
+    # Clean up local daemon script
+    rm -f /tmp/monitor_daemon.sh
     
     # Monitor instance (note: WORKER_ZONE is now updated to the successful zone)
     echo "📊 Monitor: gcloud compute ssh $INSTANCE_NAME --zone=$WORKER_ZONE --command='sudo tmux attach -t ml'"
