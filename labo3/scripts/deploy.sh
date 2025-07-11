@@ -30,7 +30,7 @@ git push --set-upstream origin main 2>/dev/null || git push 2>/dev/null || echo 
 # Auth GCP
 if [ -f "service-account.json" ]; then
     echo "Service account file found, activating service account..."
-    gcloud auth activate-service-account --key-file=../service-account.json --quiet 2>/dev/null
+    gcloud auth activate-service-account --key-file=service-account.json --quiet 2>/dev/null
 else
     echo "No service account file found, using default VM credentials..."
 fi
