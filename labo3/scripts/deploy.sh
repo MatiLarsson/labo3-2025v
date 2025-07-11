@@ -407,19 +407,18 @@ MONITOR_SCRIPT_EOF
     # Create simple daemon script
     cat > /tmp/monitor_daemon.sh << 'DAEMON_SCRIPT_EOF'
 #!/bin/bash
-set -x  # Add this line for debugging
 if ! command -v tmux &> /dev/null; then
     echo "📦 Installing tmux on node0..."
     sudo apt-get update -qq && sudo apt-get install -y tmux
 fi
 
-tmux kill-session -t monitor 2>/dev/null || echo "No existing monitor session to kill"
+sudo tmux kill-session -t monitor 2>/dev/null || echo "No existing monitor session to kill"
 
-source /tmp/monitor_config.env
+sudo source /tmp/monitor_config.env
 gcloud config set project $PROJECT_ID --quiet
 
-tmux new-session -d -s monitor
-tmux send-keys -t monitor 'chmod +x /tmp/monitor_script.sh && /tmp/monitor_script.sh' Enter
+sudo tmux new-session -d -s monitor
+sudo tmux send-keys -t monitor 'chmod +x /tmp/monitor_script.sh && /tmp/monitor_script.sh' Enter
 
 echo "🤖 Monitoring daemon started in tmux session 'monitor'"
 echo "📊 View logs: gcloud compute ssh node0 --zone=$NODE0_ZONE --command='tmux attach -t monitor'"
