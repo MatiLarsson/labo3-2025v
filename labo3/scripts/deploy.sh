@@ -330,6 +330,10 @@ if [ "$INSTANCE_CREATED" = true ]; then
     echo "📤 Copying startup script to node0..."
     gcloud compute scp /tmp/startup.sh node0:/tmp/startup.sh --zone=$NODE0_ZONE --quiet
 
+    # Configure SSH for the script session
+    echo "🔧 Configuring SSH..."
+    gcloud compute config-ssh --quiet
+
     # Start daemon on node0 to monitor instance
     echo "🤖 Starting monitoring daemon on node0..."
     gcloud compute ssh node0 --zone=$NODE0_ZONE --command="
