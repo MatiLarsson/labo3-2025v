@@ -278,9 +278,9 @@ CURRENT_ZONE=$WORKER_ZONE
 while [ $ATTEMPT -le $MAX_ATTEMPTS ] && [ "$INSTANCE_CREATED" = false ]; do
     echo "🎯 Attempt $ATTEMPT: Trying zone $CURRENT_ZONE..."
     
-    # Create the instance
-    # Create the instance and show all output immediately
-    gcloud compute instances create $INSTANCE_NAME \
+    # Create the instance (disable exit on error for this command)
+    set +e
+    CREATE_OUTPUT=$(gcloud compute instances create $INSTANCE_NAME \
         --zone=$CURRENT_ZONE \
         --machine-type=$MACHINE_TYPE \
         --image-family=ubuntu-2204-lts \
@@ -290,10 +290,11 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ] && [ "$INSTANCE_CREATED" = false ]; do
         --scopes=cloud-platform \
         --preemptible \
         --metadata-from-file startup-script=/tmp/startup.sh \
-        --metadata project-id=$PROJECT_ID,bucket-name=$BUCKET_NAME,script-name=$SCRIPT_NAME,repo-url=$REPO_URL
-    
+        --metadata project-id=$PROJECT_ID,bucket-name=$BUCKET_NAME,script-name=$SCRIPT_NAME,repo-url=$REPO_URL \
+        2>&1)
     
     CREATE_EXIT_CODE=$?
+    set -e  # Re-enable exit on error
     
     if [ $CREATE_EXIT_CODE -eq 0 ]; then
         echo "✅ Instance created successfully in zone $CURRENT_ZONE"
@@ -301,7 +302,8 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ] && [ "$INSTANCE_CREATED" = false ]; do
         INSTANCE_CREATED=true
         break
     else
-        echo "❌ Instance creation failed in zone $CURRENT_ZONE"
+        echo "❌ Instance creation failed in zone $CURRENT_ZONE (exit code: $CREATE_EXIT_CODE)"
+        echo "Error details:"
         echo "$CREATE_OUTPUT"
         
         # Get next zone in rotation
