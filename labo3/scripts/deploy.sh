@@ -279,7 +279,8 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ] && [ "$INSTANCE_CREATED" = false ]; do
     echo "🎯 Attempt $ATTEMPT: Trying zone $CURRENT_ZONE..."
     
     # Create the instance
-    CREATE_OUTPUT=$(gcloud compute instances create $INSTANCE_NAME \
+    # Create the instance and show all output immediately
+    gcloud compute instances create $INSTANCE_NAME \
         --zone=$CURRENT_ZONE \
         --machine-type=$MACHINE_TYPE \
         --image-family=ubuntu-2204-lts \
@@ -289,8 +290,8 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ] && [ "$INSTANCE_CREATED" = false ]; do
         --scopes=cloud-platform \
         --preemptible \
         --metadata-from-file startup-script=/tmp/startup.sh \
-        --metadata project-id=$PROJECT_ID,bucket-name=$BUCKET_NAME,script-name=$SCRIPT_NAME,repo-url=$REPO_URL \
-        2>&1)
+        --metadata project-id=$PROJECT_ID,bucket-name=$BUCKET_NAME,script-name=$SCRIPT_NAME,repo-url=$REPO_URL
+    
     
     CREATE_EXIT_CODE=$?
     
