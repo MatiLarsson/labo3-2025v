@@ -24,7 +24,7 @@ BOOT_DISK_TYPE=$(yq '.jobs.boot_disk_type // "pd-standard"' $CONFIG_FILE)
 echo "🚀 Deploying ML job: $INSTANCE_NAME"
 
 # Push code
-git add -A && git commit -m "Deploy $(date)" || true
+git add -A && git commit -m "Deploy $(date)" 2>/dev/null || echo "No changes to commit"
 git push --set-upstream origin main 2>/dev/null || git push 2>/dev/null || echo "⚠️ Git push failed, continuing anyway"
 
 # Auth GCP
@@ -296,7 +296,6 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ] && [ "$INSTANCE_CREATED" = false ]; do
     
     if [ $CREATE_EXIT_CODE -eq 0 ]; then
         echo "✅ Instance created successfully in zone $CURRENT_ZONE"
-        # Update WORKER_ZONE to the successful zone for daemon monitoring
         WORKER_ZONE=$CURRENT_ZONE
         INSTANCE_CREATED=true
         break
@@ -332,6 +331,52 @@ if [ "$INSTANCE_CREATED" = true ]; then
     # Erase previous logs
     echo "🧹 Cleaning up previous logs..."
     gsutil -m rm -r gs://$BUCKET_NAME/run_logs/ 2>/dev/null || echo "📂 No previous results to clean"
+
+    # Copy startup script to node0 for daemon use (overwrite if exists)
+    echo "📤 Copying startup script to node0..."
+    gcloud compute scp /tmp/startup.sh node0:/tmp/startup.sh --zone=$NODE0_ZONE --quiet
+
+    # Start daemon on node0 to monitor instance
+    echo "🤖 Starting monitoring daemon on node0..."
+    gcloud compute ssh node0 --zone=$NODE0_ZONE --command="
+    # Kill any previous daemon monitoring this job
+    pkill -f 'monitor_ml_job_$INSTANCE_NAME' 2>/dev/null || true
+    gcloud config set project $PROJECT_ID --quiet
+
+    nohup bash -c 'export JOB_NAME=\"monitor_ml_job_$INSTANCE_NAME\"
+    while true; do
+        if gsutil -q stat gs://$BUCKET_NAME/run_logs/completed_*.txt 2>/dev/null; then
+            echo \"\$(date): Job completed - stopping daemon\"; break
+        fi
+        
+        if gsutil -q stat gs://$BUCKET_NAME/run_logs/interrupted_*.txt 2>/dev/null; then
+            echo \"\$(date): Job interrupted - restarting...\"
+            while gcloud compute instances list --filter=\"name:$INSTANCE_NAME\" --format=\"value(name)\" | grep -q \"$INSTANCE_NAME\"; do
+                sleep 30
+            done
+            
+            # Keep trying to create instance until successful
+            while true; do
+                if gcloud compute instances create $INSTANCE_NAME --zone=$WORKER_ZONE --machine-type=$MACHINE_TYPE --image-family=ubuntu-2204-lts --image-project=ubuntu-os-cloud --boot-disk-size=$BOOT_DISK_SIZE --boot-disk-type=$BOOT_DISK_TYPE --scopes=cloud-platform --preemptible --metadata-from-file startup-script=/tmp/startup.sh --metadata project-id=$PROJECT_ID,bucket-name=$BUCKET_NAME,script-name=$SCRIPT_NAME,repo-url=$REPO_URL; then
+                    echo \"\$(date): Instance recreated successfully\"
+                    gsutil -m rm gs://$BUCKET_NAME/run_logs/interrupted_*.txt 2>/dev/null || true
+                    # Leave recreation flag
+                    echo \"Instance $INSTANCE_NAME recreated at \$(date)\" > /tmp/recreated_flag.txt
+                    gsutil cp /tmp/recreated_flag.txt gs://$BUCKET_NAME/run_logs/recreated_at_\$(date +%Y%m%d_%H%M%S).txt 2>/dev/null || true
+                    rm -f /tmp/recreated_flag.txt
+                    break
+                else
+                    echo \"\$(date): Instance creation failed, retrying in 60 seconds...\"
+                    sleep 60
+                fi
+            done
+        fi
+        
+        sleep 300
+    done' > /tmp/monitor.log 2>&1 &
+
+    echo \"Daemon started\"
+    "
     
     # Monitor instance (note: WORKER_ZONE is now updated to the successful zone)
     echo "📊 Monitor: gcloud compute ssh $INSTANCE_NAME --zone=$WORKER_ZONE --command='sudo tmux attach -t ml'"
