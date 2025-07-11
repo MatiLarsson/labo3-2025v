@@ -395,8 +395,11 @@ while true; do
     fi
     
     echo "📤 $(date): Uploading monitor logs..."
-    sudo tmux capture-pane -t monitor -p > /tmp/monitor_session.log 2>/dev/null || echo "Could not capture tmux pane" > /tmp/monitor_session.log
-    gsutil cp /tmp/monitor_session.log gs://$BUCKET_NAME/run_logs/monitor.log 2>/dev/null
+    # Create a unique temp file to avoid permission conflicts
+    TEMP_LOG="/tmp/monitor_session_$$.log"
+    tmux capture-pane -t monitor -p > "$TEMP_LOG" 2>/dev/null || echo "Monitor session log at $(date)" > "$TEMP_LOG"
+    gsutil cp "$TEMP_LOG" gs://$BUCKET_NAME/run_logs/monitor.log 2>/dev/null || echo "Could not upload monitor logs"
+    rm -f "$TEMP_LOG"
     echo "💤 $(date): Sleeping for 5 minutes..."
     sleep 300
 done
@@ -415,7 +418,7 @@ fi
 sudo tmux kill-session -t monitor 2>/dev/null || echo "No existing monitor session to kill"
 
 source /tmp/monitor_config.env
-gcloud config set project $PROJECT_ID --quiet
+gcloud config set project $PROJECT_ID --quiet >/dev/null 2>&1
 
 sudo tmux new-session -d -s monitor
 sudo tmux send-keys -t monitor 'chmod +x /tmp/monitor_script.sh && /tmp/monitor_script.sh' Enter
