@@ -300,25 +300,16 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ] && [ "$INSTANCE_CREATED" = false ]; do
         INSTANCE_CREATED=true
         break
     else
-        # Check if it's specifically a resource exhaustion error
-        if echo "$CREATE_OUTPUT" | grep -q "ZONE_RESOURCE_POOL_EXHAUSTED\|does not have enough resources\|currently unavailable"; then
-            echo "⚠️ Zone $CURRENT_ZONE has insufficient resources"
-            
-            # Get next zone in rotation
-            CURRENT_ZONE_SUFFIX=$(echo $CURRENT_ZONE | sed 's/.*-//')
-            NEXT_ZONE_SUFFIX=$(get_next_zone $CURRENT_ZONE_SUFFIX)
-            CURRENT_ZONE="${REGION}-${NEXT_ZONE_SUFFIX}"
-            
-            echo "🔄 Next attempt will try zone $CURRENT_ZONE"
-            
-            echo "⏳ Waiting 5 seconds before trying next zone..."
-            sleep 5
-        else
-            echo "❌ Instance creation failed in zone $CURRENT_ZONE with non-resource error:"
-            echo "$CREATE_OUTPUT"
-            echo "🛑 Stopping attempts due to non-resource related failure"
-            break
-        fi
+        echo "❌ Instance creation failed in zone $CURRENT_ZONE"
+        echo "$CREATE_OUTPUT"
+        
+        # Get next zone in rotation
+        CURRENT_ZONE_SUFFIX=$(echo $CURRENT_ZONE | sed 's/.*-//')
+        NEXT_ZONE_SUFFIX=$(get_next_zone $CURRENT_ZONE_SUFFIX)
+        CURRENT_ZONE="${REGION}-${NEXT_ZONE_SUFFIX}"
+        
+        echo "🔄 Trying next zone: $CURRENT_ZONE"
+        sleep 5
     fi
     
     ATTEMPT=$((ATTEMPT + 1))
