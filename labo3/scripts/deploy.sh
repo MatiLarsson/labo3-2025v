@@ -395,7 +395,7 @@ while true; do
     fi
     
     echo "📤 $(date): Uploading monitor logs..."
-    tmux capture-pane -t monitor -p > /tmp/monitor_session.log
+    sudo tmux capture-pane -t monitor -p > /tmp/monitor_session.log 2>/dev/null || echo "Could not capture tmux pane" > /tmp/monitor_session.log
     gsutil cp /tmp/monitor_session.log gs://$BUCKET_NAME/run_logs/monitor.log 2>/dev/null
     echo "💤 $(date): Sleeping for 5 minutes..."
     sleep 300
@@ -426,7 +426,7 @@ DAEMON_SCRIPT_EOF
 
     # Configure SSH for the script session
     echo "🔧 Configuring SSH..."
-    gcloud compute config-ssh --quiet 2>/dev/null
+    gcloud compute config-ssh --quiet >/dev/null 2>&1
 
     # Copy all files to node0
     echo "📤 Copying monitoring files to node0..."
