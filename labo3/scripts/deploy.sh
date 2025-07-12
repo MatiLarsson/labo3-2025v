@@ -23,9 +23,13 @@ BOOT_DISK_TYPE=$(yq '.jobs.boot_disk_type // "pd-standard"' $CONFIG_FILE)
 
 echo "🚀 Deploying ML job: $INSTANCE_NAME"
 
-# Kill node0 tmux session if it exists named "monitor"
-echo "🗑️ Killing existing tmux session named 'monitor' on node0..."
-gcloud compute ssh node0 --zone=$NODE0_ZONE --command="sudo tmux kill-session -t monitor" 2>/dev/null || echo "No existing tmux session named 'monitor' to kill"
+# Kill ALL existing monitoring processes and sessions on node0
+gcloud compute ssh node0 --zone=$NODE0_ZONE --command="
+    sudo pkill -f monitor_script.sh 2>/dev/null || true
+    sudo tmux kill-session -t monitor 2>/dev/null || true
+    tmux kill-session -t monitor 2>/dev/null || true
+    echo 'Monitoring cleanup completed successfully'
+" 2>/dev/null || echo "⚠️ Could not connect to node0 for cleanup - node0 may be stopped or unreachable"
 
 # Push code
 git add -A && git commit -m "Deploy $(date)" 2>/dev/null || echo "No changes to commit"
