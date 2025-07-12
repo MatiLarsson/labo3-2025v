@@ -25,10 +25,29 @@ echo "🚀 Deploying ML job: $INSTANCE_NAME"
 
 # Kill ALL existing monitoring processes and sessions on node0
 echo "🗑️ Cleaning up previous monitoring processes..."
-gcloud compute ssh node0 --zone=us-east1-d --command="sudo pkill -f monitor_script.sh" 2>/dev/null || echo "No monitor scripts to kill"
-gcloud compute ssh node0 --zone=us-east1-d --command="sudo tmux kill-session -t monitor" 2>/dev/null || echo "No sudo tmux monitor session to kill"
-gcloud compute ssh node0 --zone=us-east1-d --command="tmux kill-session -t monitor" 2>/dev/null || echo "No user tmux monitor session to kill"
-echo "✅ Cleanup completed"
+
+# Kill monitor script processes
+if gcloud compute ssh node0 --zone=us-east1-d --command="sudo pkill -f monitor_script.sh" 2>/dev/null; then
+    echo "✅ Killed existing monitor script processes"
+else
+    echo "ℹ️ No monitor scripts to kill"
+fi
+
+# Kill sudo tmux monitor sessions
+if gcloud compute ssh node0 --zone=us-east1-d --command="sudo tmux kill-session -t monitor" 2>/dev/null; then
+    echo "✅ Killed sudo tmux monitor session"
+else
+    echo "ℹ️ No sudo tmux monitor session to kill"
+fi
+
+# Kill user tmux monitor sessions
+if gcloud compute ssh node0 --zone=us-east1-d --command="tmux kill-session -t monitor" 2>/dev/null; then
+    echo "✅ Killed user tmux monitor session"
+else
+    echo "ℹ️ No user tmux monitor session to kill"
+fi
+
+echo "🎯 Cleanup completed"
 
 # Push code
 git add -A && git commit -m "Deploy $(date)" 2>/dev/null || echo "No changes to commit"
@@ -428,10 +447,6 @@ sudo tmux send-keys -t monitor 'chmod +x /tmp/monitor_script.sh && /tmp/monitor_
 echo "🤖 Monitoring daemon started in tmux session 'monitor'"
 echo "📊 View logs: gcloud compute ssh node0 --zone=$NODE0_ZONE --command='tmux attach -t monitor'"
 DAEMON_SCRIPT_EOF
-
-    # Configure SSH for the script session
-    echo "🔧 Configuring SSH..."
-    gcloud compute config-ssh --quiet >/dev/null 2>&1
 
     # Copy all files to node0
     echo "📤 Copying monitoring files to node0..."
