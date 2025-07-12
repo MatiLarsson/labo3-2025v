@@ -29,7 +29,7 @@ gcloud compute ssh node0 --zone=$NODE0_ZONE --command="
     sudo tmux kill-session -t monitor 2>/dev/null || true
     tmux kill-session -t monitor 2>/dev/null || true
     echo 'Monitoring cleanup completed successfully'
-" 2>/dev/null || echo "⚠️ Could not connect to node0 for cleanup - node0 may be stopped or unreachable"
+" || echo "⚠️ Could not connect to node0 for cleanup - node0 may be stopped or unreachable"
 
 # Push code
 git add -A && git commit -m "Deploy $(date)" 2>/dev/null || echo "No changes to commit"
