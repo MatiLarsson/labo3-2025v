@@ -23,6 +23,10 @@ BOOT_DISK_TYPE=$(yq '.jobs.boot_disk_type // "pd-standard"' $CONFIG_FILE)
 
 echo "🚀 Deploying ML job: $INSTANCE_NAME"
 
+# Kill node0 tmux session if it exists named "monitor"
+echo "🗑️ Killing existing tmux session named 'monitor' on node0..."
+gcloud compute ssh node0 --zone=$NODE0_ZONE --command="sudo tmux kill-session -t monitor" 2>/dev/null || echo "No existing tmux session named 'monitor' to kill"
+
 # Push code
 git add -A && git commit -m "Deploy $(date)" 2>/dev/null || echo "No changes to commit"
 git push --set-upstream origin main 2>/dev/null || git push 2>/dev/null || echo "⚠️ Git push failed, continuing anyway"
@@ -147,10 +151,6 @@ cleanup_and_upload() {
     
     DEPLOY_ID=$(date '+%Y%m%d_%H%M%S')
     INSTANCE_NAME=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/name" -H "Metadata-Flavor: Google")
-    
-    # Create a status file indicating the job was interrupted
-    echo "Job interrupted at $(date) on instance $INSTANCE_NAME" > /tmp/interrupted_status.txt
-    gsutil cp /tmp/interrupted_status.txt gs://$BUCKET_NAME/run_logs/interrupted_${DEPLOY_ID}.txt 2>/dev/null || echo "⚠️ Could not upload status"
     
     # Upload run.log if it exists
     if [ -f "run.log" ]; then
@@ -341,21 +341,20 @@ while true; do
         echo "✅ $(date): Job completed successfully - stopping daemon"
         break
     fi
+
+    # Check worker instance status every cycle
+    WORKER_STATUS=$(gcloud compute instances describe $INSTANCE_NAME --zone=$WORKER_ZONE --format="value(status)" 2>/dev/null || echo "NOT_FOUND")
+    echo "📊 $(date): Worker status: $WORKER_STATUS"
     
-    if gsutil -q stat gs://$BUCKET_NAME/run_logs/interrupted_*.txt 2>/dev/null; then
-        echo "⚠️ $(date): Job interrupted - initiating restart sequence..."
-        
+    if [ "$WORKER_STATUS" = "TERMINATED" ] || [ "$WORKER_STATUS" = "STOPPED" ] || [ "$WORKER_STATUS" = "NOT_FOUND" ]; then
+        echo "🚨 $(date): Worker was preempted/stopped! Triggering restart..."
         echo "🗑️ $(date): Force deleting worker instance..."
         gcloud compute instances delete $INSTANCE_NAME --zone=$WORKER_ZONE --quiet 2>/dev/null || echo "Instance already deleted"
-        
         echo "⏳ $(date): Waiting for worker instance deletion..."
         while gcloud compute instances list --filter="name:$INSTANCE_NAME" --format="value(name)" | grep -q "$INSTANCE_NAME"; do
             echo "⏳ $(date): Still waiting for $INSTANCE_NAME deletion..."
             sleep 30
         done
-        
-        echo "🧹 $(date): Clearing interrupted flag..."
-        gsutil -m rm gs://$BUCKET_NAME/run_logs/interrupted_*.txt 2>/dev/null || echo "No flags to clear"
         
         echo "🔄 $(date): Recreating worker instance..."
         RECREATE_SUCCESS=false
@@ -442,7 +441,6 @@ DAEMON_SCRIPT_EOF
     
     # Monitor instances
     echo "📊 Monitor: gcloud compute ssh $INSTANCE_NAME --zone=$WORKER_ZONE --command='sudo tmux attach -t ml'"
-    echo "📊 Monitor: gcloud compute ssh node0 --zone=$NODE0_ZONE --command='sudo tmux attach -t monitor'"
     echo "📁 All logs will be uploaded to gs://$BUCKET_NAME/run_logs/ even if preempted"
 else
     echo "❌ Failed to create instance after $((ATTEMPT-1)) attempts"
