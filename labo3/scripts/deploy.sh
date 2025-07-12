@@ -50,6 +50,7 @@ fi
 echo "🎯 Cleanup completed"
 
 # Push code
+echo "📦 Pushing code to repository..."
 git add -A && git commit -m "Deploy $(date)" 2>/dev/null || echo "No changes to commit"
 git push --set-upstream origin main 2>/dev/null || git push 2>/dev/null || echo "⚠️ Git push failed, continuing anyway"
 
