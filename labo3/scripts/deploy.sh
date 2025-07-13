@@ -333,8 +333,6 @@ if [ "$INSTANCE_CREATED" = true ]; then
     echo "📤 Copying startup script to node0..."
     gcloud compute scp /tmp/startup.sh node0:/tmp/startup.sh --zone=$NODE0_ZONE --quiet
 
-    # Create environment file with all variables
-    echo "📝 Creating monitoring configuration..."
     cat > /tmp/monitor_config.env << CONFIG_EOF
 PROJECT_ID=$PROJECT_ID
 BUCKET_NAME=$BUCKET_NAME
@@ -446,7 +444,7 @@ sudo tmux new-session -d -s monitor
 sudo tmux send-keys -t monitor 'chmod +x /tmp/monitor_script.sh && /tmp/monitor_script.sh' Enter
 
 echo "🤖 Monitoring daemon started in tmux session 'monitor'"
-echo "📊 View logs: gcloud compute ssh node0 --zone=$NODE0_ZONE --command='tmux attach -t monitor'"
+echo "📊 View logs: gcloud compute ssh node0 --zone=$NODE0_ZONE --command='sudo tmux attach -t monitor'"
 DAEMON_SCRIPT_EOF
 
     # Copy all files to node0

@@ -624,6 +624,31 @@ class LightGBMModel:
             logger.debug("💾 Study backed up to GCS")
         except Exception as e:
             logger.warning(f"⚠️ Failed to backup study to GCS: {e}")
+
+    def _ensure_final_models_in_class(self):
+        # Ensure self.final_models exists
+        if not hasattr(self, 'final_models') or not self.final_models or len(self.final_models) < self.final_train["num_seeds"]:
+            # Download and load each model in a list, and point it at self.final_models
+            logger.info("🔄 Loading final models from MLflow...")
+            self.final_models = []
+            client = mlflow.tracking.MlflowClient()
+            runs = client.search_runs(
+                experiment_names=[self.experiment_name],
+                filter_string="tags.final_training_completed = 'true'",
+                max_results=1
+            )
+            if runs.empty:
+                raise ValueError("No final training run found. Please run train_final_ensemble() first.")
+            run_id = runs.iloc[0]['run_id']
+            for i in range(self.final_train["num_seeds"]):
+                try:
+                    model_path = client.download_artifacts(run_id, f"final_models/final_model_{i+1}.txt")
+                    model = lgb.Booster(model_file=model_path)
+                    self.final_models.append(model)
+                    logger.info(f"Loaded final model {i+1}/{self.final_train['num_seeds']}")
+                except Exception as e:
+                    logger.error(f"Failed to load final model {i+1}/{self.final_train['num_seeds']}: {e}")
+                    raise
     
     def optimize(self):
         """
@@ -1024,9 +1049,9 @@ class LightGBMModel:
             logger.info(f"✅ Logged aggregated feature importance for {len(sorted_importance)} features")
 
             # Make predictions on test set
+            self._ensure_final_models_in_class()
             logger.info("Making predictions on test set...")
             predictions = np.mean([model.predict(self.X_test) for model in self.final_models], axis=0)
-
 
             # Calculate total forecast error
             tfe = pl.DataFrame({
@@ -1067,10 +1092,8 @@ class LightGBMModel:
         Use the final trained models to predict on the Kaggle dataset for the cherry compliant rows.
         Use the 12 month average for the non cherry compliant rows or the rows with problematic standardization.
         """
-        if self.final_models is None:
-            raise ValueError("Must train final models before making predictions")
-        
-        logger.info("📊 Making predictions for Kaggle submission...")
+
+        self._ensure_final_models_in_class()
 
         with mlflow.start_run(run_name="kaggle_predictions", nested=True):
             logger.info("Retrieving product IDs for Kaggle submission...")
