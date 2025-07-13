@@ -626,29 +626,34 @@ class LightGBMModel:
             logger.warning(f"⚠️ Failed to backup study to GCS: {e}")
 
     def _ensure_final_models_in_class(self):
-        # Ensure self.final_models exists
-        if not hasattr(self, 'final_models') or not self.final_models or len(self.final_models) < self.final_train["num_seeds"]:
-            # Download and load each model in a list, and point it at self.final_models
+        logger.info("🔄 Ensuring final models are loaded into the class...")
+        if not hasattr(self, 'final_models') or not self.final_models or len(self.final_models) < int(self.final_train["num_seeds"]):
             logger.info("🔄 Loading final models from MLflow...")
             self.final_models = []
-            client = mlflow.tracking.MlflowClient()
-            runs = client.search_runs(
-                experiment_names=[self.experiment_name],
-                filter_string="tags.final_training_completed = 'true'",
-                max_results=1
-            )
-            if runs.empty:
-                raise ValueError("No final training run found. Please run train_final_ensemble() first.")
-            run_id = runs.iloc[0]['run_id']
-            for i in range(self.final_train["num_seeds"]):
-                try:
+            num_seeds = int(self.final_train["num_seeds"])
+
+            for i, seed in enumerate(num_seeds):
+                # Check if model for this seed already exists in the experiment
+                existing_model_runs = mlflow.search_runs(
+                    experiment_names=[self.experiment_name],
+                    filter_string=f"tags.final_model_seed = '{str(seed)}'",
+                    max_results=1
+                )
+                
+                if not existing_model_runs.empty:
+                    # Load existing model
+                    run_id = existing_model_runs.iloc[0]['run_id']
+                    client = mlflow.tracking.MlflowClient()
+
+                    # Download and load the model
                     model_path = client.download_artifacts(run_id, f"final_models/final_model_{i+1}.txt")
                     model = lgb.Booster(model_file=model_path)
+                    logger.info(f"Loaded existing model {i+1}/{num_seeds} with seed: {seed}")
                     self.final_models.append(model)
-                    logger.info(f"Loaded final model {i+1}/{self.final_train['num_seeds']}")
-                except Exception as e:
-                    logger.error(f"Failed to load final model {i+1}/{self.final_train['num_seeds']}: {e}")
-                    raise
+                    logger.info(f"✅ Model {i+1} loaded successfully")
+                else:
+                    logger.error(f"❌ No existing model found for seed {seed}. Please ensure the final model is trained and logged correctly.")
+                    raise RuntimeError("No existing model found for seed. Please ensure the final model is trained and logged correctly.")
     
     def optimize(self):
         """
@@ -890,6 +895,8 @@ class LightGBMModel:
         
         if not existing_runs.empty:
             logger.info("✅ Final training already completed, skipping")
+            self._ensure_final_models_in_class()
+            logger.info("Final models loaded successfully.")
             return
             
         logger.info("🚀 Starting final models training with optimized parameters...")
@@ -1048,8 +1055,6 @@ class LightGBMModel:
             mlflow.log_dict(sorted_importance, "aggregated_feature_importance.json")
             logger.info(f"✅ Logged aggregated feature importance for {len(sorted_importance)} features")
 
-            # Make predictions on test set
-            self._ensure_final_models_in_class()
             logger.info("Making predictions on test set...")
             predictions = np.mean([model.predict(self.X_test) for model in self.final_models], axis=0)
 
@@ -1092,8 +1097,6 @@ class LightGBMModel:
         Use the final trained models to predict on the Kaggle dataset for the cherry compliant rows.
         Use the 12 month average for the non cherry compliant rows or the rows with problematic standardization.
         """
-
-        self._ensure_final_models_in_class()
 
         with mlflow.start_run(run_name="kaggle_predictions", nested=True):
             logger.info("Retrieving product IDs for Kaggle submission...")
