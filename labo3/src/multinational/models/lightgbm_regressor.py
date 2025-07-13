@@ -629,10 +629,14 @@ class LightGBMModel:
         logger.info("🔄 Ensuring final models are loaded into the class...")
         if not hasattr(self, 'final_models') or not self.final_models or len(self.final_models) < int(self.final_train["num_seeds"]):
             logger.info("🔄 Loading final models from MLflow...")
-            self.final_models = []
-            num_seeds = int(self.final_train["num_seeds"])
 
-            for i, seed in enumerate(num_seeds):
+            self.final_models = []
+
+            num_seeds = int(self.final_train["num_seeds"])
+            np.random.seed(42)
+            seeds = np.random.randint(1, 10000, size=num_seeds).tolist()
+
+            for i, seed in enumerate(seeds):
                 # Check if model for this seed already exists in the experiment
                 existing_model_runs = mlflow.search_runs(
                     experiment_names=[self.experiment_name],
