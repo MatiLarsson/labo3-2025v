@@ -625,6 +625,13 @@ class LightGBMModel:
         except Exception as e:
             logger.warning(f"⚠️ Failed to backup study to GCS: {e}")
 
+    def _get_seeds(self):
+        """Generate consistent seeds for final models."""
+        num_seeds = int(self.final_train["num_seeds"])
+        np.random.seed(42)  # Always use the same seed
+        seeds = np.random.randint(1, 10000, size=num_seeds).tolist()
+        return seeds, num_seeds
+
     def _ensure_final_models_in_class(self):
         logger.info("🔄 Ensuring final models are loaded into the class...")
         if not hasattr(self, 'final_models') or not self.final_models or len(self.final_models) < int(self.final_train["num_seeds"]):
@@ -632,9 +639,7 @@ class LightGBMModel:
 
             self.final_models = []
 
-            num_seeds = int(self.final_train["num_seeds"])
-            np.random.seed(42)
-            seeds = np.random.randint(1, 10000, size=num_seeds).tolist()
+            seeds, num_seeds = self._get_seeds()
 
             for i, seed in enumerate(seeds):
                 # Check if model for this seed already exists in the experiment
@@ -914,9 +919,7 @@ class LightGBMModel:
                 categorical_feature=self.categorical_columns_idx
             )
             
-            num_seeds = self.final_train["num_seeds"]
-            np.random.seed(42)
-            seeds = np.random.randint(1, 10000, size=num_seeds).tolist()
+            seeds, num_seeds = self._get_seeds()
 
             self.final_models = []
             self.aggregated_feature_importance = {}
