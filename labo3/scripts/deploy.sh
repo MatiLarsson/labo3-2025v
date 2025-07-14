@@ -222,7 +222,7 @@ tmux send-keys -t ml "export \$(cat .env | xargs) && echo 'MLFLOW_TRACKING_URI='
 tmux send-keys -t ml "uv sync" Enter
 tmux send-keys -t ml "echo '💾 Final disk check before ML script:' && df -h /" Enter
 
-# Start the ML script with better error handling
+# Start the ML script
 tmux send-keys -t ml "python scripts/$SCRIPT_NAME 2>&1 | tee run.log; echo \$? > /tmp/ml_exit_code; echo ML_SCRIPT_DONE > /tmp/ml_done" Enter
 
 
