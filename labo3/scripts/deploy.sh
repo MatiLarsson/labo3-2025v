@@ -459,8 +459,8 @@ if ! command -v tmux &> /dev/null; then
 fi
 
 # Make sure past monitor processes are killed
-echo "🗑️ Making sure no past monitoring sessions or processes are left running..."
-sudo pkill -f monitor_script.sh" 2>/dev/null || echo "No past monitor script processes to kill"
+echo "🗑️  Making sure no past monitoring sessions or processes are left running..."
+sudo pkill -f monitor_script.sh 2>/dev/null || echo "No past monitor script processes to kill"
 sudo tmux kill-session -t monitor 2>/dev/null || echo "No existing monitor session to kill"
 
 source /tmp/monitor_config.env
