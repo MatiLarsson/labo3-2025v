@@ -1243,7 +1243,6 @@ class LightGBMModel:
                     
                     artifact_path = f"kaggle_submission_multipliers/x{multiplier_str}"
                     mlflow.log_artifact(multiplier_path, artifact_path=artifact_path)
-                    mlflow.log_metric(f"multiplier_{multiplier_str}", multiplier)
                     
                     temp_files_to_cleanup.append(multiplier_path)
                     logger.info(f"✅ Logged variant {multiplier}")

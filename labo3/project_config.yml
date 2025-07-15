@@ -1,4 +1,4 @@
-experiment_name: "demand_forecasting_exp_18"
+experiment_name: "demand_forecasting_exp_19"
 
 gcp:
   project_id: "lucid-sonar-465922-s9"
@@ -29,23 +29,23 @@ paths:
     - "data/tb_stocks.txt"
 
 dataset:
-  testing_mode: true  # Set to false for full dataset in production
+  testing_mode: false  # Set to false for full dataset in production
   max_customers: 50 # ignored if not in testing mode
   max_products: 20 # ignored if not in testing mode
   min_periodo: 201701 # always applies
-  future_periods_extension: 2
-  positive_quantity_tn_cherry_months: 9 # applied as flag
-  max_lag_periods: 12 # 35 | Must use a minimum of 11 to avoid issues with rolling stats
-  anchored_ratios_periods: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] # [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
-  rolling_stats_window_sizes: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] # [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
-  rolling_statistics: ['mean', 'median', 'std', 'min', 'max', 'sum', 'count', 'variance', 'skewness', 'kurtosis']
-  reg_slopes_window_sizes: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] # [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
-  max_z_lag_periods: 12 # 35 | Must use a minimum of 11 to avoid issues with rolling stats
-  z_anchored_delta_lag_periods: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] # [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
-  z_adjacent_delta_lag_periods: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] # [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34]
-  z_anchored_ratio_lag_periods: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] # [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
-  z_adjacent_ratio_lag_periods: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11] # [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34]
-  z_regression_slopes_window_sizes: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] # [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
+  future_periods_extension: 3
+  positive_quantity_tn_cherry_months: 6 # applied as flag
+  max_lag_periods: 17 # 35 max
+  anchored_ratios_periods: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17] # [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
+  rolling_stats_window_sizes: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17] # [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
+  rolling_statistics: ['mean', 'median', 'std', 'min', 'max', 'sum', 'skewness', 'kurtosis']
+  reg_slopes_window_sizes: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17] # [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
+  max_z_lag_periods: 12 # 35 max
+  z_anchored_delta_lag_periods: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17] # [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
+  z_adjacent_delta_lag_periods: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16] # [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34]
+  z_anchored_ratio_lag_periods: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17] # [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
+  z_adjacent_ratio_lag_periods: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16] # [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34]
+  z_regression_slopes_window_sizes: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17] # [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
   stocks_file: "tb_stocks.txt"
   products_file: "tb_productos.txt"
   sell_in_file: "sell-in.txt"
@@ -72,21 +72,19 @@ cv:
 optimizer:
   study_name: "demand_forecasting_study"
   direction: "minimize"
-  n_trials: 3
+  n_trials: 1
 
   param_ranges:
-    learning_rate: [0.01, 0.1]  # log scale
-    num_leaves: [200, 800]  # int
-    max_depth: [10, 25]  # int
-    min_data_in_leaf: [2000, 8000]  # int
-    min_sum_hessian_in_leaf: [0.001, 1.0]  # log scale
-    bagging_fraction: [0.7, 1.0]  # float
-    bagging_freq: [3, 7]  # int
+    learning_rate: [0.045, 0.065]  # log scale
+    num_leaves: [500, 700]  # int
+    max_depth: [8, 25]  # int
+    min_data_in_leaf: [6500, 11000]  # int
+    min_sum_hessian_in_leaf: [0.01, 0.1]  # log scale
     feature_fraction: [0.7, 1.0]  # float
-    lambda_l1: [0.001, 1.0]  # log scale
-    lambda_l2: [0.001, 1.0]  # log scale
-    linear_lambda: [0.001, 1.0]  # log scale
-    max_bin: [200, 500]  # int
+    lambda_l1: [0.001, 0.1]  # log scale
+    lambda_l2: [0.001, 0.1]  # log scale
+    linear_lambda: [0.1, 0.5]  # log scale
+    max_bin: [350, 600]  # int
 
   base_model_params:
     objective: 'regression'

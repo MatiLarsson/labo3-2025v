@@ -40,13 +40,6 @@ else
     echo "ℹ️ No sudo tmux monitor session to kill"
 fi
 
-# Kill user tmux monitor sessions
-if gcloud compute ssh node0 --zone=us-east1-d --command="tmux kill-session -t monitor" 2>/dev/null; then
-    echo "✅ Killed user tmux monitor session"
-else
-    echo "ℹ️ No user tmux monitor session to kill"
-fi
-
 echo "🎯 Cleanup completed"
 
 # Push code
@@ -59,7 +52,7 @@ if [ -f "service-account.json" ]; then
     echo "Service account file found, activating service account..."
     gcloud auth activate-service-account --key-file=service-account.json --quiet 2>/dev/null
 else
-    echo "No service account file found, using default VM credentials..."
+    echo "No service account file found, using default credentials..."
 fi
 
 gcloud config set project $PROJECT_ID --quiet 2>/dev/null
@@ -225,9 +218,11 @@ tmux send-keys -t ml "echo '💾 Final disk check before ML script:' && df -h /"
 # Start the ML script
 tmux send-keys -t ml "python scripts/$SCRIPT_NAME 2>&1 | tee run.log; echo \$? > /tmp/ml_exit_code; echo ML_SCRIPT_DONE > /tmp/ml_done" Enter
 
-
 # Clean up the background preemption monitor
 kill $MONITOR_PID 2>/dev/null || true
+
+# Disable trap to avoid cleanup on exit
+trap - SIGTERM SIGINT SIGQUIT
 
 cd /opt/repo/labo3
 
@@ -244,9 +239,26 @@ fi
 # Upload run.log
 gsutil cp run.log gs://$BUCKET_NAME/run_logs/run_${DEPLOY_ID}_${LOG_SUFFIX}.log 2>/dev/null || echo "⚠️ Could not upload run.log"
 
-# Create completion status file
+# Create completion status file with retry
 echo "Job completed at $(date) with exit code $EXIT_CODE" > /tmp/completion_status.txt
-gsutil cp /tmp/completion_status.txt gs://$BUCKET_NAME/run_logs/completed_${DEPLOY_ID}.txt 2>/dev/null || echo "⚠️ Could not upload completion status"
+
+# Upload with retry logic
+UPLOAD_SUCCESS=false
+for i in {1..3}; do
+    echo "📤 Upload attempt $i/3..."
+    if gsutil cp /tmp/completion_status.txt gs://$BUCKET_NAME/run_logs/completed_${DEPLOY_ID}.txt 2>/dev/null; then
+        echo "✅ Completion status uploaded successfully"
+        UPLOAD_SUCCESS=true
+        break
+    else
+        echo "⚠️ Upload attempt $i failed, retrying in 5 seconds..."
+        sleep 5
+    fi
+done
+
+if [ "$UPLOAD_SUCCESS" = false ]; then
+    echo "❌ Failed to upload completion status after 3 attempts"
+fi
 
 INSTANCE_NAME=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/name" -H "Metadata-Flavor: Google")
 INSTANCE_ZONE=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/zone" -H "Metadata-Flavor: Google" | sed 's|.*/||')
@@ -355,6 +367,11 @@ export JOB_NAME="monitor_ml_job_worker"
 echo "🤖 Starting ML job monitoring daemon at $(date)"
 echo "📊 Monitoring bucket: gs://$BUCKET_NAME/run_logs/"
 
+# Clean up any persistent log files from previous monitor runs
+echo "🧹 Cleaning up previous monitor logs..."
+rm -f /tmp/monitor_complete_history.log
+echo "✅ Previous monitor logs cleaned"
+
 while true; do
     echo "🔍 $(date): Checking job status..."
     
@@ -415,11 +432,17 @@ while true; do
     fi
     
     echo "📤 $(date): Uploading monitor logs..."
-    # Create a unique temp file to avoid permission conflicts
-    TEMP_LOG="/tmp/monitor_session_$$.log"
-    tmux capture-pane -t monitor -p > "$TEMP_LOG" 2>/dev/null || echo "Monitor session log at $(date)" > "$TEMP_LOG"
-    gsutil cp "$TEMP_LOG" gs://$BUCKET_NAME/run_logs/monitor.log 2>/dev/null || echo "Could not upload monitor logs"
-    rm -f "$TEMP_LOG"
+    # Use a persistent log file that accumulates history
+    PERSISTENT_LOG="/tmp/monitor_complete_history.log"
+
+    # Append current tmux session with timestamp
+    echo "=== Monitor Session Capture at $(date) ===" >> "$PERSISTENT_LOG"
+    tmux capture-pane -t monitor -p >> "$PERSISTENT_LOG" 2>/dev/null || echo "Monitor session log at $(date)" >> "$PERSISTENT_LOG"
+    echo "" >> "$PERSISTENT_LOG"  # Add separator
+
+    # Upload the complete accumulated history
+    gsutil cp "$PERSISTENT_LOG" gs://$BUCKET_NAME/run_logs/monitor.log 2>/dev/null || echo "Could not upload monitor logs"
+
     echo "💤 $(date): Sleeping for 5 minutes..."
     sleep 300
 done
@@ -435,6 +458,9 @@ if ! command -v tmux &> /dev/null; then
     sudo apt-get update -qq && sudo apt-get install -y tmux
 fi
 
+# Make sure past monitor processes are killed
+echo "🗑️ Making sure no past monitoring sessions or processes are left running..."
+sudo pkill -f monitor_script.sh" 2>/dev/null || echo "No past monitor script processes to kill"
 sudo tmux kill-session -t monitor 2>/dev/null || echo "No existing monitor session to kill"
 
 source /tmp/monitor_config.env
