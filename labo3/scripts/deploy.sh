@@ -368,8 +368,8 @@ echo "🤖 Starting ML job monitoring daemon at $(date)"
 echo "📊 Monitoring bucket: gs://$BUCKET_NAME/run_logs/"
 
 # Clean up any persistent log files from previous monitor runs
-echo "🧹 Cleaning up previous monitor logs..."
-rm -f /tmp/monitor_complete_history.log
+echo "🧹 Cleaning up previous monitor log files..."
+rm -f /tmp/monitor_complete_history.log /tmp/monitor_last_lines_count
 echo "✅ Previous monitor logs cleaned"
 
 while true; do
@@ -432,16 +432,40 @@ while true; do
     fi
     
     echo "📤 $(date): Uploading monitor logs..."
-    # Use a persistent log file that accumulates history
     PERSISTENT_LOG="/tmp/monitor_complete_history.log"
+    LAST_LINES_FILE="/tmp/monitor_last_lines_count"
 
-    # Append current tmux session with timestamp
-    echo "=== Monitor Session Capture at $(date) ===" >> "$PERSISTENT_LOG"
-    tmux capture-pane -t monitor -p >> "$PERSISTENT_LOG" 2>/dev/null || echo "Monitor session log at $(date)" >> "$PERSISTENT_LOG"
-    echo "" >> "$PERSISTENT_LOG"  # Add separator
+    # Get current tmux session content
+    CURRENT_CAPTURE="/tmp/current_capture.tmp"
+    tmux capture-pane -t monitor -p > "$CURRENT_CAPTURE" 2>/dev/null || echo "Monitor session log at $(date)" > "$CURRENT_CAPTURE"
 
-    # Upload the complete accumulated history
+    # Get total lines in current capture
+    CURRENT_LINES=$(wc -l < "$CURRENT_CAPTURE")
+
+    # Get number of lines from last capture (default to 0 if file doesn't exist)
+    LAST_LINES=$(cat "$LAST_LINES_FILE" 2>/dev/null || echo "0")
+
+    # Calculate new lines since last capture
+    NEW_LINES=$((CURRENT_LINES - LAST_LINES))
+
+    if [ "$NEW_LINES" -gt 0 ]; then
+        # Append timestamp header and new lines only
+        echo "=== Monitor Session Capture at $(date) ===" >> "$PERSISTENT_LOG"
+        tail -n "$NEW_LINES" "$CURRENT_CAPTURE" >> "$PERSISTENT_LOG"
+        echo "" >> "$PERSISTENT_LOG"  # Add separator
+    else
+        # No new lines, just add a timestamp
+        echo "=== Monitor Session Capture at $(date) - No new output ===" >> "$PERSISTENT_LOG"
+    fi
+
+    # Save current line count for next iteration
+    echo "$CURRENT_LINES" > "$LAST_LINES_FILE"
+
+    # Upload the accumulated log (overwrites previous upload)
     gsutil cp "$PERSISTENT_LOG" gs://$BUCKET_NAME/run_logs/monitor.log 2>/dev/null || echo "Could not upload monitor logs"
+
+    # Clean up temp file
+    rm -f "$CURRENT_CAPTURE"
 
     echo "💤 $(date): Sleeping for 5 minutes..."
     sleep 300
