@@ -1306,7 +1306,7 @@ class DatasetGenerator:
                         quantity_cust_request_tn_standardized,
                         quantity_tn_standardized,
                         quantity_stock_final_standardized,
-                        quantity_tn_target_standardized - quantity_tn_standardized AS target,
+                        quantity_tn_target_standardized AS target,
 
                         -- Lags
                         {self._generate_lag_features(

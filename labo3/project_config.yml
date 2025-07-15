@@ -1,4 +1,4 @@
-experiment_name: "demand_forecasting_exp_19"
+experiment_name: "demand_forecasting_exp_20"
 
 gcp:
   project_id: "lucid-sonar-465922-s9"

@@ -460,8 +460,18 @@ fi
 
 # Make sure past monitor processes are killed
 echo "🗑️  Making sure no past monitoring sessions or processes are left running..."
-sudo pkill -f monitor_script.sh 2>/dev/null || echo "No past monitor script processes to kill"
-sudo tmux kill-session -t monitor 2>/dev/null || echo "No existing monitor session to kill"
+
+if sudo pkill -f monitor_script.sh 2>/dev/null; then
+    echo "Killed existing monitor script processes"
+else
+    echo "No past monitor script processes to kill"
+fi
+
+if sudo tmux kill-session -t monitor 2>/dev/null; then
+    echo "Killed existing monitor session"
+else
+    echo "No existing monitor session to kill"
+fi
 
 source /tmp/monitor_config.env
 gcloud config set project $PROJECT_ID --quiet >/dev/null 2>&1

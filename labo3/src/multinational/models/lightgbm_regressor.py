@@ -41,7 +41,6 @@ class LightGBMModel:
         """Setup MLflow tracking."""
         logger.info("🔧 Setting up MLflow tracking...")
         
-        # Use GCSManager for authentication setup
         tracking_uri = get_mlflow_tracking_uri()
         
         # Set MLflow tracking URI
@@ -375,8 +374,7 @@ class LightGBMModel:
                                 pl.col("quantity_tn_standardized").is_not_nan() &
                                 pl.col("quantity_tn_predicted_sarima_12m").is_not_nan()
                             ).then(
-                                ((pl.col("quantity_tn_predicted_sarima_12m") - pl.col("quantity_tn_cumulative_mean")) / pl.col("quantity_tn_cumulative_std"))
-                                - pl.col("quantity_tn_standardized")
+                                (pl.col("quantity_tn_predicted_sarima_12m") - pl.col("quantity_tn_cumulative_mean")) / pl.col("quantity_tn_cumulative_std")
                             ).otherwise(pl.lit(None))
                             .alias("quantity_target_sarima_12m_prediction")
                         ])
@@ -429,7 +427,10 @@ class LightGBMModel:
 
             # Log dataset with prepared features to MLflow
             temp_path = "/tmp/features_prepared_dataset.parquet"
-            
+
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
             self.df.write_parquet(temp_path)
             
             logger.info(f"Logging features prepared dataset to MLflow at features_prepared_{self.dataset["dataset_name"]}...")
@@ -544,8 +545,6 @@ class LightGBMModel:
         logger.info(f"Kaggle dataset size: {self.kaggle_size}")
 
         # Gather global series needed for training
-        self.global_quantity_tn_standardized_train = train_dataset.select(pl.col('quantity_tn_standardized')).to_numpy().flatten()
-        self.global_quantity_tn_standardized_test = test_dataset.select(pl.col('quantity_tn_standardized')).to_numpy().flatten()
         self.global_mean_values_train = train_dataset.select(pl.col('quantity_tn_cumulative_mean')).to_numpy().flatten()
         self.global_mean_values_test = test_dataset.select(pl.col('quantity_tn_cumulative_mean')).to_numpy().flatten()
         self.global_std_values_train = train_dataset.select(pl.col('quantity_tn_cumulative_std')).to_numpy().flatten()
@@ -679,14 +678,13 @@ class LightGBMModel:
             tfe = pl.DataFrame({
                 'y_true': y_true_array,
                 'y_pred': y_pred,
-                'quantity_tn_standardized': self.current_val_fold_quantity_tn_standardized,
                 'mean': self.current_val_fold_mean,
                 'std': self.current_val_fold_std
             }).with_columns([
                 # Reverse transform predictions
-                (((pl.col('quantity_tn_standardized') + pl.col('y_pred')) * pl.col('std')) + pl.col('mean')).alias('quantity_tn_pred'),
+                ((pl.col('y_pred') * pl.col('std')) + pl.col('mean')).alias('quantity_tn_pred'),
                 # Reverse transform true values
-                (((pl.col('quantity_tn_standardized') + pl.col('y_true')) * pl.col('std')) + pl.col('mean')).alias('quantity_tn_true')
+                ((pl.col('y_true') * pl.col('std')) + pl.col('mean')).alias('quantity_tn_true')
             ]).with_columns([
                 # Zero out negative predictions
                 pl.col('quantity_tn_pred').clip(0.0, None).alias('quantity_tn_pred')
@@ -717,9 +715,6 @@ class LightGBMModel:
                 'max_depth': trial.suggest_int('max_depth', self.optimizer["param_ranges"]["max_depth"][0], self.optimizer["param_ranges"]["max_depth"][1]),
                 'min_data_in_leaf': trial.suggest_int('min_data_in_leaf', self.optimizer["param_ranges"]["min_data_in_leaf"][0], self.optimizer["param_ranges"]["min_data_in_leaf"][1]),
                 'min_sum_hessian_in_leaf': trial.suggest_float('min_sum_hessian_in_leaf', self.optimizer["param_ranges"]["min_sum_hessian_in_leaf"][0], self.optimizer["param_ranges"]["min_sum_hessian_in_leaf"][1], log=True),
-                'bagging_fraction': trial.suggest_float('bagging_fraction', self.optimizer["param_ranges"]["bagging_fraction"][0], self.optimizer["param_ranges"]["bagging_fraction"][1]),
-                'bagging_freq': trial.suggest_int('bagging_freq', self.optimizer["param_ranges"]["bagging_freq"][0], self.optimizer["param_ranges"]["bagging_freq"][1]),
-                'bagging_seed': self.optimizer["base_model_params"]["bagging_seed"],
                 'feature_fraction': trial.suggest_float('feature_fraction', self.optimizer["param_ranges"]["feature_fraction"][0], self.optimizer["param_ranges"]["feature_fraction"][1]),
                 'feature_fraction_seed': self.optimizer["base_model_params"]["feature_fraction_seed"],
                 'lambda_l1': trial.suggest_float('lambda_l1', self.optimizer["param_ranges"]["lambda_l1"][0], self.optimizer["param_ranges"]["lambda_l1"][1], log=True),
@@ -767,8 +762,7 @@ class LightGBMModel:
                         reference=fold_train
                     )
                     
-                    # Store indices for custom metric
-                    self.current_val_fold_quantity_tn_standardized = self.global_quantity_tn_standardized_train[val_idx]
+                    # Store rows for custom metric
                     self.current_val_fold_mean = self.global_mean_values_train[val_idx]
                     self.current_val_fold_std = self.global_std_values_train[val_idx]
                     
@@ -820,6 +814,7 @@ class LightGBMModel:
                 "n_folds": self.cv["n_folds"],
                 "n_trials": self.optimizer["n_trials"]
             })
+
             mlflow.log_dict(self.folds, "cv_folds.json")
 
             study = optuna.create_study(
@@ -873,9 +868,6 @@ class LightGBMModel:
                 'max_depth': best_trial.params['max_depth'],
                 'min_data_in_leaf': best_trial.params['min_data_in_leaf'],
                 'min_sum_hessian_in_leaf': best_trial.params['min_sum_hessian_in_leaf'],
-                'bagging_fraction': best_trial.params['bagging_fraction'],
-                'bagging_freq': best_trial.params['bagging_freq'],
-                'bagging_seed': 42,
                 'feature_fraction': best_trial.params['feature_fraction'],
                 'feature_fraction_seed': 42,
                 'lambda_l1': best_trial.params['lambda_l1'],
@@ -1000,7 +992,6 @@ class LightGBMModel:
                 # Create a copy of params for this seed
                 final_train_params = self.final_params.copy()
                 final_train_params['seed'] = seed
-                final_train_params['bagging_seed'] = seed
                 final_train_params['feature_fraction_seed'] = seed
 
                 # Train final model
@@ -1069,14 +1060,13 @@ class LightGBMModel:
             tfe = pl.DataFrame({
                 'y_true': self.y_test,
                 'y_pred': predictions,
-                'quantity_tn_standardized': self.global_quantity_tn_standardized_test,
                 'mean': self.global_mean_values_test,
                 'std': self.global_std_values_test
             }).with_columns([
                 # Reverse transform predictions
-                (((pl.col('quantity_tn_standardized') + pl.col('y_pred')) * pl.col('std')) + pl.col('mean')).alias('quantity_tn_pred'),
+                ((pl.col('y_pred') * pl.col('std')) + pl.col('mean')).alias('quantity_tn_pred'),
                 # Reverse transform true values
-                (((pl.col('quantity_tn_standardized') + pl.col('y_true')) * pl.col('std')) + pl.col('mean')).alias('quantity_tn_true')
+                ((pl.col('y_true') * pl.col('std')) + pl.col('mean')).alias('quantity_tn_true')
             ]).with_columns([
                 # Zero out negative predictions
                 pl.col('quantity_tn_pred').clip(0.0, None).alias('quantity_tn_pred')
@@ -1155,20 +1145,18 @@ class LightGBMModel:
             predictions = np.mean([model.predict(kaggle_X) for model in self.final_models], axis=0)
 
             kaggle_product_ids_actual = kaggle_model_compliant.select('product_id').to_numpy().flatten()
-            kaggle_quantity_tn_standardized = kaggle_model_compliant.select('quantity_tn_standardized').to_numpy().flatten()
             kaggle_mean = kaggle_model_compliant.select('quantity_tn_cumulative_mean').to_numpy().flatten()
             kaggle_std = kaggle_model_compliant.select('quantity_tn_cumulative_std').to_numpy().flatten()
 
             transformed_predictions = (
                 pl.DataFrame({
                     'product_id': kaggle_product_ids_actual,
-                    'quantity_tn_standardized': kaggle_quantity_tn_standardized,
                     'y_pred': predictions,
                     'mean': kaggle_mean,
                     'std': kaggle_std
                 })
                 .with_columns([
-                    (((pl.col('quantity_tn_standardized') + pl.col('y_pred')) * pl.col('std')) + pl.col('mean')).alias('quantity_tn_pred')
+                    ((pl.col('y_pred') * pl.col('std')) + pl.col('mean')).alias('quantity_tn_pred')
                 ]).with_columns([
                     # Zero out negative predictions
                     pl.col('quantity_tn_pred').clip(0.0, None).alias('tn')
@@ -1256,8 +1244,5 @@ class LightGBMModel:
                     os.remove(temp_file)
                 except OSError:
                     pass
-
-            # Summary metrics
-            mlflow.log_metric("total_submission_variants", len(multipliers) + 1)
 
             logger.info(f"✅ All {len(multipliers) + 1} submission files logged to MLflow successfully!")
