@@ -259,12 +259,6 @@ done
 if [ "$UPLOAD_SUCCESS" = false ]; then
     echo "❌ Failed to upload completion status after 3 attempts"
 fi
-
-INSTANCE_NAME=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/name" -H "Metadata-Flavor: Google")
-INSTANCE_ZONE=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/zone" -H "Metadata-Flavor: Google" | sed 's|.*/||')
-
-# Erase vm
-gcloud compute instances delete $INSTANCE_NAME --zone=$INSTANCE_ZONE --quiet || echo "⚠️ Could not delete instance"
 EOF
 
 # Create instance with zone fallback
@@ -369,13 +363,20 @@ echo "📊 Monitoring bucket: gs://$BUCKET_NAME/run_logs/"
 
 # Clean up any persistent log files from previous monitor runs
 echo "🧹 Cleaning up previous monitor log files..."
-rm -f /tmp/monitor_complete_history.log /tmp/monitor_last_lines_count
+rm -f /tmp/monitor_current.log
 echo "✅ Previous monitor logs cleaned"
 
 while true; do
     echo "🔍 $(date): Checking job status..."
     
     if gsutil -q stat gs://$BUCKET_NAME/run_logs/completed_*.txt 2>/dev/null; then
+        # Delete worker instance if job completed successfully
+        echo "✅ $(date): Job completed successfully - deleting worker instance..."
+        if gcloud compute instances delete $INSTANCE_NAME --zone=$WORKER_ZONE --quiet; then
+            echo "✅ $(date): Worker instance deleted successfully"
+        else
+            echo "⚠️ $(date): Could not delete worker instance, it may have already been deleted"
+        fi
         echo "✅ $(date): Job completed successfully - stopping daemon"
         break
     fi
@@ -432,40 +433,16 @@ while true; do
     fi
     
     echo "📤 $(date): Uploading monitor logs..."
-    PERSISTENT_LOG="/tmp/monitor_complete_history.log"
-    LAST_LINES_FILE="/tmp/monitor_last_lines_count"
+    TEMP_LOG="/tmp/monitor_current.log"
 
-    # Get current tmux session content
-    CURRENT_CAPTURE="/tmp/current_capture.tmp"
-    tmux capture-pane -t monitor -p > "$CURRENT_CAPTURE" 2>/dev/null || echo "Monitor session log at $(date)" > "$CURRENT_CAPTURE"
+    # Capture everything from the beginning of the tmux session
+    tmux capture-pane -t monitor -p -S - > "$TEMP_LOG" 2>/dev/null || echo "Monitor session log at $(date)" > "$TEMP_LOG"
 
-    # Get total lines in current capture
-    CURRENT_LINES=$(wc -l < "$CURRENT_CAPTURE")
-
-    # Get number of lines from last capture (default to 0 if file doesn't exist)
-    LAST_LINES=$(cat "$LAST_LINES_FILE" 2>/dev/null || echo "0")
-
-    # Calculate new lines since last capture
-    NEW_LINES=$((CURRENT_LINES - LAST_LINES))
-
-    if [ "$NEW_LINES" -gt 0 ]; then
-        # Append timestamp header and new lines only
-        echo "=== Monitor Session Capture at $(date) ===" >> "$PERSISTENT_LOG"
-        tail -n "$NEW_LINES" "$CURRENT_CAPTURE" >> "$PERSISTENT_LOG"
-        echo "" >> "$PERSISTENT_LOG"  # Add separator
-    else
-        # No new lines, just add a timestamp
-        echo "=== Monitor Session Capture at $(date) - No new output ===" >> "$PERSISTENT_LOG"
-    fi
-
-    # Save current line count for next iteration
-    echo "$CURRENT_LINES" > "$LAST_LINES_FILE"
-
-    # Upload the accumulated log (overwrites previous upload)
-    gsutil cp "$PERSISTENT_LOG" gs://$BUCKET_NAME/run_logs/monitor.log 2>/dev/null || echo "Could not upload monitor logs"
+    # Upload the temp log file
+    gsutil cp "$TEMP_LOG" gs://$BUCKET_NAME/run_logs/monitor.log 2>/dev/null || echo "Could not upload monitor logs"
 
     # Clean up temp file
-    rm -f "$CURRENT_CAPTURE"
+    rm -f "$TEMP_LOG"
 
     echo "💤 $(date): Sleeping for 5 minutes..."
     sleep 300

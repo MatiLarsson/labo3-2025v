@@ -16,6 +16,7 @@ from statsforecast import StatsForecast
 from statsforecast.models import AutoARIMA
 import pandas as pd
 from concurrent.futures import ProcessPoolExecutor, as_completed
+import ast
 
 from multinational.config import ProjectConfig
 from multinational.gcs_manager import GCSManager
@@ -60,11 +61,11 @@ class LightGBMModel:
         mlflow.set_experiment(self.experiment_name)
         logger.info("✅ MLflow tracking setup completed")
 
-    def _load_data(self):
+    def _load_main_dataset(self):
         """
         Loads full dataset from storage.
         """
-        logger.info("🔄 Loading data from MLflow...")
+        logger.info("🔄 Loading main dataset from MLflow...")
         
         # Check if dataset exists in MLflow
         existing_runs = mlflow.search_runs(
@@ -74,7 +75,7 @@ class LightGBMModel:
         )
         
         if existing_runs.empty:
-            raise FileNotFoundError("❌ No dataset found in MLflow. Please generate the dataset first.")
+            raise FileNotFoundError("❌ No main dataset found in MLflow. Please generate the main dataset first.")
         
         # Download dataset from MLflow storage
         run_id = existing_runs.iloc[0]['run_id']
@@ -82,7 +83,31 @@ class LightGBMModel:
         local_path = client.download_artifacts(run_id, self.dataset["dataset_name"])
         
         self.df = pl.read_parquet(local_path)
-        logger.info("✅ Data successfully loaded from storage.")
+        logger.info("✅ Main dataset successfully loaded from storage.")
+
+    def _load_12m_agg_dataset(self):
+        """
+        Loads full dataset from storage.
+        """
+        logger.info("🔄 Loading 12m agg dataset from MLflow...")
+        
+        # Check if dataset exists in MLflow
+        existing_runs = mlflow.search_runs(
+            experiment_names=[self.experiment_name],
+            filter_string="tags.dataset_generated = 'true'",
+            max_results=1
+        )
+        
+        if existing_runs.empty:
+            raise FileNotFoundError("❌ No 12m agg dataset found in MLflow. Please generate the 12m agg dataset first.")
+        
+        # Download dataset from MLflow storage
+        run_id = existing_runs.iloc[0]['run_id']
+        client = mlflow.tracking.MlflowClient()
+        local_path = client.download_artifacts(run_id, self.dataset["products_12m_agg_dataset_name"])
+        
+        self.df_12m_agg = pl.read_parquet(local_path)
+        logger.info("✅ 12m agg dataset successfully loaded from storage.")
 
     def _identify_features(self):
         """Identify numeric and categorical features."""
@@ -416,7 +441,7 @@ class LightGBMModel:
             
             logger.info("🔄 Starting feature preparation pipeline...")
 
-            self._load_data()
+            self._load_main_dataset()
             self._identify_features() # Needed for _clip_extreme_values
             self._clip_extreme_values()
             self._flag_cherry_rows()
@@ -626,9 +651,34 @@ class LightGBMModel:
 
     def _get_seeds(self):
         """Generate consistent seeds for final models."""
-        num_seeds = int(self.final_train["num_seeds"])
-        np.random.seed(42)  # Always use the same seed
-        seeds = np.random.randint(1, 10000, size=num_seeds).tolist()
+        if not hasattr(self, 'final_model_seeds'):
+            # Check if there are existing seeds in MLflow for the current experiment
+            existing_runs = mlflow.search_runs(
+                experiment_names=[self.experiment_name],
+                filter_string="params.final_model_seeds IS NOT NULL",  # Changed from tags to params
+                max_results=1
+            )
+            if not existing_runs.empty:
+                seeds_str = existing_runs.iloc[0]['params.final_model_seeds']  # Changed from tags to params
+                seeds = ast.literal_eval(seeds_str)
+                num_seeds = len(seeds)
+                logger.info(f"Using existing seeds from MLflow: {seeds}")
+                self.final_model_seeds = seeds
+                logger.info(f"✅ {len(seeds)} seeds for final models: {seeds[0]}...{seeds[-1]}")
+            else:
+                logger.info("🔄 No existing seeds found in MLflow, generating new seeds...")
+                num_seeds = int(self.final_train["num_seeds"])
+                np.random.seed(42)  # Always use the same seed
+                seeds = np.random.randint(1, 10000, size=num_seeds).tolist()
+                # Log first and last seed for consistency
+                logger.info(f"Generated {len(seeds)} seeds for final models: {seeds[0]}...{seeds[-1]}")
+                self.final_model_seeds = seeds
+                mlflow.log_param("final_model_seeds", str(seeds))
+                logger.info(f"✅ {len(seeds)} seeds for final models: {seeds[0]}...{seeds[-1]}")
+        else:
+            seeds = self.final_model_seeds
+            logger.info(f"Using existing {len(seeds)} seeds for final models: {seeds[0]}...{seeds[-1]}")
+
         return seeds, num_seeds
 
     def _ensure_final_models_in_class(self):
@@ -1091,8 +1141,11 @@ class LightGBMModel:
     def predict_for_kaggle(self):
         """
         Make predictions for Kaggle submission.
-        Use the final trained models to predict on the Kaggle dataset for the cherry compliant rows.
-        Use the 12 month average for the non cherry compliant rows or the rows with problematic standardization.
+        For the top products (present in the kaggle dataset):
+            Use the final trained models to predict on the Kaggle dataset for the cherry compliant rows.
+            Use the 12 month average for the non cherry compliant rows or the rows with problematic standardization.
+        For the rest of the products:
+            Use the 12 month average aggregated by product_id.
         """
 
         with mlflow.start_run(run_name="kaggle_predictions", nested=True):
@@ -1181,6 +1234,23 @@ class LightGBMModel:
                 .agg(pl.col('tn').sum().alias('tn'))  # Sum tn by product_id
             )
             
+            self._load_12m_agg_dataset()
+
+            # For the product_ids not in the kaggle dataset, use the 12 month average from the aggregated dataset
+            missing_product_ids = set(kaggle_product_ids) - set(final_predictions['product_id'].to_numpy())
+            if missing_product_ids:
+                logger.info(f"Found {len(missing_product_ids)} missing product IDs in final predictions, using 12 month average for them...")
+                missing_df = (
+                    pl.DataFrame({'product_id': list(missing_product_ids)})
+                    .join(
+                        self.df_12m_agg,
+                        on='product_id',
+                        how='left'
+                    )
+                    .with_columns(pl.col('tn').fill_null(0.0))  # Fill nulls with 0.0
+                )
+                final_predictions = final_predictions.vstack(missing_df)
+
             final_submission_df = (
                 required_product_ids_df
                 .join(final_predictions, on='product_id', how='left')

@@ -26,7 +26,7 @@ if [ -n "$INSTANCE_INFO" ]; then
     echo "📍 Found running instance: $INSTANCE_NAME in zone $INSTANCE_ZONE"
     
     # Kill the worker instance
-    echo "🗑️ Terminating worker instance..."
+    echo "🗑️  Terminating worker instance..."
     if gcloud compute instances delete $INSTANCE_NAME --zone=$INSTANCE_ZONE --quiet 2>/dev/null; then
         echo "✅ Worker instance terminated"
     else

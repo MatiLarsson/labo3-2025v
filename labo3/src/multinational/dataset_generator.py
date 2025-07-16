@@ -100,28 +100,6 @@ class DatasetGenerator:
                 self.conn.register(table_name, df)
 
                 logger.info(f"Read and registered table '{table_name}'")
-
-    def _get_testing_limiter(self):
-        """
-        Get SQL limiter for testing mode.
-        
-        Args:
-            testing_mode (bool): If True, limits the dataset for faster development
-            
-        Returns:
-            str: SQL LIMIT clause if in testing mode, empty string otherwise
-        """
-        if self.dataset["testing_mode"]:
-            logger.info("🧪 Applying testing limits for faster development")
-
-            testing_limiter = f"""
-                AND dc.customer_id IN (SELECT customer_id FROM sell_in LIMIT {self.dataset["max_customers"]})  -- Top {self.dataset["max_customers"]} customers
-                AND dp.product_id IN (SELECT product_id FROM sell_in GROUP BY product_id ORDER BY SUM(tn) DESC LIMIT {self.dataset["max_products"]})  -- Top {self.dataset["max_products"]} products by volume
-            """
-        else:
-            testing_limiter = ""
-
-        return testing_limiter
     
     @staticmethod
     def _generate_lag_features(
@@ -579,12 +557,6 @@ class DatasetGenerator:
     def generate_dataset(self):
         """
         Generate the complete SQL query for the dataset.
-        
-        Args:
-            testing_mode (bool): If True, adds limitations for faster development
-            
-        Returns:
-            str: Complete SQL query for dataset creation
         """
 
         duck_db_auto_config = self._configure_duckdb_auto(self.conn)
@@ -614,7 +586,7 @@ class DatasetGenerator:
                 except Exception as e:
                     logger.warning(f"Could not log parameter {key}: {e}")
 
-            testing_limiter = self._get_testing_limiter()
+            top_products_to_consider = self.config.dataset["top_products"]
             
             logger.info("🛠️ Generating dataset")
 
@@ -750,6 +722,17 @@ class DatasetGenerator:
                     LEFT JOIN stocks s ON si.product_id = s.product_id AND si.periodo = s.periodo
                     GROUP BY si.customer_id, si.periodo
                 ),
+                top_product_ids_to_predict AS (
+                    -- Get top {top_products_to_consider} products by total tn in 2019
+                    SELECT 
+                        tp.product_id
+                    FROM to_predict tp
+                    LEFT JOIN sell_in si ON tp.product_id = si.product_id
+                    WHERE si.periodo BETWEEN 201901 AND 201912
+                    GROUP BY tp.product_id
+                    ORDER BY SUM(si.tn) DESC
+                    LIMIT {top_products_to_consider}
+                ),
                 active_product_customer_period AS (
                     SELECT 
                         dp.product_id,
@@ -784,7 +767,6 @@ class DatasetGenerator:
                             strptime(CAST(LEAST(ca.customer_last_active_period, pa.product_last_active_period) AS VARCHAR), '%Y%m'),
                             INTERVAL '{self.dataset["future_periods_extension"]} months'
                         )) AS BIGINT)
-                        {testing_limiter}
                     -- Only include pairs of product_id and customer_id that had at least one sell_in record
                         AND EXISTS (
                             SELECT 1
@@ -792,6 +774,7 @@ class DatasetGenerator:
                             WHERE si2.product_id = dp.product_id
                                 AND si2.customer_id = dc.customer_id
                         )
+                        AND dp.product_id IN (SELECT product_id FROM top_product_ids_to_predict)
                     GROUP BY
                         dp.product_id, dc.customer_id, ps.periodo,
                         p.cat1, p.cat2, p.cat3, p.brand, p.sku_size, p.descripcion
@@ -1553,7 +1536,7 @@ class DatasetGenerator:
             temp_path = "/tmp/dataset.parquet"
             self.conn.execute(f"COPY dataset TO '{temp_path}' (FORMAT PARQUET)")
             
-            logger.info(f"Logging dataset to MLflow at {self.dataset['dataset_name']}...")
+            logger.info(f"Logging main dataset to MLflow at {self.dataset['dataset_name']}...")
 
             mlflow.log_artifact(
                 temp_path,
@@ -1562,11 +1545,50 @@ class DatasetGenerator:
 
             os.remove(temp_path)
 
-            logger.info(f"Dataset generated and logged to MLflow at {self.dataset['dataset_name']}")
+            logger.info(f"Main dataset generated and logged to MLflow at {self.dataset['dataset_name']}")
             
             # Log dataset metadata
             mlflow.log_param("dataset_len", str(self.conn.execute("SELECT COUNT(*) FROM dataset").fetchone()[0]))
             mlflow.log_param("dataset_columns", str(self.conn.execute("DESCRIBE dataset").fetchall()))
+
+            # Generate dataset with 12m avg agg for each product_id required for kaggle submission
+            self.conn.execute(f"""
+            CREATE OR REPLACE TABLE dataset_12m_agg AS (
+            WITH sales_period AS (
+                SELECT
+                    tp.product_id,
+                    si.periodo,
+                    COALESCE(SUM(si.tn), 0) AS tn,
+                FROM
+                    to_predict tp
+                LEFT JOIN
+                    sell_in si ON tp.product_id = si.product_id
+                GROUP BY
+                    tp.product_id, si.periodo
+            )
+            SELECT 
+                sp.product_id,
+                AVG(sp.tn) AS tn
+            FROM
+                sales_period sp
+            WHERE sp.periodo IN ('201912', '201911', '201910', '201909', '201908', '201907', '201906', '201905', '201904', '201903', '201902', '201901')
+            GROUP BY sp.product_id
+            );               
+            """)
+
+            temp_path_12m_agg = "/tmp/products_12m_agg.parquet"
+            self.conn.execute(f"COPY dataset_12m_agg TO '{temp_path_12m_agg}' (FORMAT PARQUET)")
+
+            logger.info(f"Logging 12m agg dataset to MLflow at {self.dataset['products_12m_agg_dataset_name']}...") 
+
+            mlflow.log_artifact(
+                temp_path_12m_agg,
+                artifact_path=self.dataset["products_12m_agg_dataset_name"]
+            )
+
+            os.remove(temp_path_12m_agg)
+
+            logger.info(f"12m agg dataset generated and logged to MLflow at {self.dataset['products_12m_agg_dataset_name']}")
 
             # Tag the dataset as generated
             mlflow.set_tag("dataset_generated", "true")
