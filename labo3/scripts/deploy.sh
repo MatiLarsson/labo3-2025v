@@ -55,7 +55,6 @@ else
     echo "No service account file found, using default credentials..."
 fi
 
-gcloud components update --quiet 2>/dev/null || echo "⚠️ Could not update gcloud components, continuing anyway"
 gcloud config set project $PROJECT_ID --quiet 2>/dev/null
 
 # Process and upload .env file
