@@ -655,30 +655,27 @@ class LightGBMModel:
             # Check if there are existing seeds in MLflow for the current experiment
             existing_runs = mlflow.search_runs(
                 experiment_names=[self.experiment_name],
-                filter_string="params.final_model_seeds IS NOT NULL",  # Changed from tags to params
+                filter_string="params.final_model_seeds != ''",
                 max_results=1
             )
             if not existing_runs.empty:
-                seeds_str = existing_runs.iloc[0]['params.final_model_seeds']  # Changed from tags to params
+                seeds_str = existing_runs.iloc[0]['params.final_model_seeds']
                 seeds = ast.literal_eval(seeds_str)
-                num_seeds = len(seeds)
-                logger.info(f"Using existing seeds from MLflow: {seeds}")
                 self.final_model_seeds = seeds
-                logger.info(f"✅ {len(seeds)} seeds for final models: {seeds[0]}...{seeds[-1]}")
+                logger.info(f"Using existing seeds from MLflow: {seeds}")
             else:
                 logger.info("🔄 No existing seeds found in MLflow, generating new seeds...")
                 num_seeds = int(self.final_train["num_seeds"])
-                np.random.seed(42)  # Always use the same seed
+                np.random.seed(42)
                 seeds = np.random.randint(1, 10000, size=num_seeds).tolist()
-                # Log first and last seed for consistency
-                logger.info(f"Generated {len(seeds)} seeds for final models: {seeds[0]}...{seeds[-1]}")
-                self.final_model_seeds = seeds
                 mlflow.log_param("final_model_seeds", str(seeds))
+                self.final_model_seeds = seeds
                 logger.info(f"✅ {len(seeds)} seeds for final models: {seeds[0]}...{seeds[-1]}")
         else:
             seeds = self.final_model_seeds
             logger.info(f"Using existing {len(seeds)} seeds for final models: {seeds[0]}...{seeds[-1]}")
 
+        num_seeds = len(seeds)
         return seeds, num_seeds
 
     def _ensure_final_models_in_class(self):
