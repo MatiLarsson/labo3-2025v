@@ -1,4 +1,4 @@
-experiment_name: "demand_forecasting_exp_22"
+experiment_name: "demand_forecasting_exp_23"
 
 gcp:
   project_id: "lucid-sonar-465922-s9"
@@ -29,7 +29,7 @@ paths:
     - "data/tb_stocks.txt"
 
 dataset:
-  top_products: 50 # Top products to consider (the top products from the submission requred product_ids with the most sales in 2019)
+  top_products: 100 # Top products to consider (the top products from the submission requred product_ids with the most sales in 2019)
   min_periodo: 201701 # always applies
   future_periods_extension: 3
   positive_quantity_tn_cherry_months: 6 # applied as flag
@@ -71,7 +71,7 @@ cv:
 optimizer:
   study_name: "demand_forecasting_study"
   direction: "minimize"
-  n_trials: 1
+  n_trials: 16
 
   param_ranges:
     learning_rate: [0.03, 0.07]  # log scale
@@ -95,4 +95,4 @@ optimizer:
     metric: 'custom'
 
 final_train:
-  num_seeds: 10
+  num_seeds: 16
