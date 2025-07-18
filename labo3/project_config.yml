@@ -1,4 +1,4 @@
-experiment_name: "demand_forecasting_exp_23"
+experiment_name: "demand_forecasting_exp_24"
 
 gcp:
   project_id: "lucid-sonar-465922-s9"
@@ -29,26 +29,30 @@ paths:
     - "data/tb_stocks.txt"
 
 dataset:
-  top_products: 100 # Top products to consider (the top products from the submission requred product_ids with the most sales in 2019)
+  clip_negative_predictions_before_aggregation: false # True to clip negative predictions before aggregatioin in bo optimization, test, and final predictions for kaggle
+  calculate_tfe_only_on_kaggle_products: true # True to calculate TFE only on products that are in the Kaggle submission file, during bo optimization and final test
+  train_only_on_kaggle_top_products: false # True to limit the train and test datasets to the top products required by the Kaggle submission list
+  top_kaggle_products_to_train_on: 100 # Top products to consider (the top products from the submission requred product_ids with the most sales in 2019)
   min_periodo: 201701 # always applies
   future_periods_extension: 3
-  positive_quantity_tn_cherry_months: 6 # applied as flag
-  max_lag_periods: 35 # 35 max
-  anchored_ratios_periods: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35] # [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
-  rolling_stats_window_sizes: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35] # [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
+  positive_quantity_tn_cherry_months: 9 # applied as flag
+  max_lag_periods: 13 # 35 max
+  anchored_ratios_periods: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] # [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
+  rolling_stats_window_sizes: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] # [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
   rolling_statistics: ['mean', 'median', 'std', 'min', 'max', 'sum', 'skewness', 'kurtosis']
-  reg_slopes_window_sizes: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35] # [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
-  max_z_lag_periods: 35 # 35 max
-  z_anchored_delta_lag_periods: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35] # [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
-  z_adjacent_delta_lag_periods: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34] # [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34]
-  z_anchored_ratio_lag_periods: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35] # [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
-  z_adjacent_ratio_lag_periods: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34] # [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34]
-  z_regression_slopes_window_sizes: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35] # [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
+  reg_slopes_window_sizes: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] # [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
+  max_z_lag_periods: 13 # 35 max
+  z_anchored_delta_lag_periods: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] # [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
+  z_adjacent_delta_lag_periods: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] # [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34]
+  z_anchored_ratio_lag_periods: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] # [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
+  z_adjacent_ratio_lag_periods: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] # [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34]
+  z_regression_slopes_window_sizes: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] # [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
   stocks_file: "tb_stocks.txt"
   products_file: "tb_productos.txt"
   sell_in_file: "sell-in.txt"
   products_for_kaggle_file: "product_id_to_predict_201912.txt"
   target: "target"
+  target_type: "std" # "std" "diff_std"
   period: "periodo"
   cat_features:
     - cat1

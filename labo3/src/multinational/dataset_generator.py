@@ -586,8 +586,29 @@ class DatasetGenerator:
                 except Exception as e:
                     logger.warning(f"Could not log parameter {key}: {e}")
 
-            top_products_to_consider = self.config.dataset["top_products"]
-            
+            if eval(self.config.dataset["train_only_on_kaggle_top_products"]):
+                top_kaggle_products_filter = "AND dp.product_id IN (SELECT product_id FROM top_product_ids_to_use)"
+            else:
+                top_kaggle_products_filter = ""
+
+            if int(eval(self.config.dataset["top_kaggle_products_to_train_on"])) > 0 and eval(self.config.dataset["train_only_on_kaggle_top_products"]):
+                top_products_to_consider = int(eval(self.config.dataset["top_kaggle_products_to_train_on"]))
+                
+                top_product_ids_to_use_sentence = f"""
+                top_product_ids_to_use AS (
+                    -- Get top {top_products_to_consider} products by total tn in 2019
+                    SELECT 
+                        tp.product_id
+                    FROM to_predict tp
+                    LEFT JOIN sell_in si ON tp.product_id = si.product_id
+                    WHERE si.periodo BETWEEN 201901 AND 201912
+                    GROUP BY tp.product_id
+                    ORDER BY SUM(si.tn) DESC
+                    LIMIT {top_products_to_consider}
+                ),"""
+            else:
+                top_product_ids_to_use_sentence = ""
+
             logger.info("🛠️ Generating dataset")
 
             self.conn.execute(f"""
@@ -722,17 +743,7 @@ class DatasetGenerator:
                     LEFT JOIN stocks s ON si.product_id = s.product_id AND si.periodo = s.periodo
                     GROUP BY si.customer_id, si.periodo
                 ),
-                top_product_ids_to_predict AS (
-                    -- Get top {top_products_to_consider} products by total tn in 2019
-                    SELECT 
-                        tp.product_id
-                    FROM to_predict tp
-                    LEFT JOIN sell_in si ON tp.product_id = si.product_id
-                    WHERE si.periodo BETWEEN 201901 AND 201912
-                    GROUP BY tp.product_id
-                    ORDER BY SUM(si.tn) DESC
-                    LIMIT {top_products_to_consider}
-                ),
+                {top_product_ids_to_use_sentence}
                 active_product_customer_period AS (
                     SELECT 
                         dp.product_id,
@@ -774,7 +785,7 @@ class DatasetGenerator:
                             WHERE si2.product_id = dp.product_id
                                 AND si2.customer_id = dc.customer_id
                         )
-                        AND dp.product_id IN (SELECT product_id FROM top_product_ids_to_predict)
+                        {top_kaggle_products_filter}
                     GROUP BY
                         dp.product_id, dc.customer_id, ps.periodo,
                         p.cat1, p.cat2, p.cat3, p.brand, p.sku_size, p.descripcion

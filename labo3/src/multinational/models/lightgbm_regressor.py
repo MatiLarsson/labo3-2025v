@@ -570,6 +570,10 @@ class LightGBMModel:
         logger.info(f"Kaggle dataset size: {self.kaggle_size}")
 
         # Gather global series needed for training
+        self.global_product_ids_train = train_dataset.select(pl.col(self.dataset["product_id"])).to_numpy().flatten()
+        self.global_product_ids_test = test_dataset.select(pl.col(self.dataset["product_id"])).to_numpy().flatten()
+        self.global_iperiodos_train = train_dataset.select(pl.col(self.dataset["iperiodo"])).to_numpy().flatten()
+        self.global_iperiodos_test = test_dataset.select(pl.col(self.dataset["iperiodo"])).to_numpy().flatten()
         self.global_mean_values_train = train_dataset.select(pl.col('quantity_tn_cumulative_mean')).to_numpy().flatten()
         self.global_mean_values_test = test_dataset.select(pl.col('quantity_tn_cumulative_mean')).to_numpy().flatten()
         self.global_std_values_train = train_dataset.select(pl.col('quantity_tn_cumulative_std')).to_numpy().flatten()
@@ -714,6 +718,13 @@ class LightGBMModel:
         """
         Optimize the model's params with GCS-backed Optuna storage for recovery.
         """
+
+        if not hasattr(self, 'kaggle_product_ids') or not self.kaggle_product_ids:
+            logger.info("Retrieving kaggle product IDs...")
+            kaggle_product_ids_content = self.gcp_manager.download_file_as_bytes(self.dataset["products_for_kaggle_file"])
+            required_product_ids_df = pl.read_csv(BytesIO(kaggle_product_ids_content), has_header=True)
+            self.kaggle_product_ids = required_product_ids_df.select('product_id').to_numpy().flatten()
+
         # Custom metric function for LightGBM
         def total_forecast_error_cv(y_pred, y_true): # Needs (preds: numpy 1-D array, eval_data: Dataset)
             """
@@ -723,26 +734,43 @@ class LightGBMModel:
             y_true_array = y_true.get_label()
 
             tfe = pl.DataFrame({
+                'product_id': self.current_val_fold_product_ids,
+                'iperiodo': self.current_val_fold_periods,
                 'y_true': y_true_array,
                 'y_pred': y_pred,
                 'mean': self.current_val_fold_mean,
                 'std': self.current_val_fold_std
-            }).with_columns([
+            }).filter(
+                pl.when(eval(self.dataset["calculate_tfe_only_on_kaggle_products"]))
+                .then(pl.col("product_id").is_in(self.kaggle_product_ids))
+                .otherwise(pl.lit(True))  # keep all rows when condition is False
+            ).with_columns([
                 # Reverse transform predictions
                 ((pl.col('y_pred') * pl.col('std')) + pl.col('mean')).alias('quantity_tn_pred'),
                 # Reverse transform true values
                 ((pl.col('y_true') * pl.col('std')) + pl.col('mean')).alias('quantity_tn_true')
             ]).with_columns([
                 # Zero out negative predictions
-                pl.col('quantity_tn_pred').clip(0.0, None).alias('quantity_tn_pred')
+                pl.when(eval(self.dataset["clip_negative_predictions_before_aggregation"]))
+                .then(pl.col('quantity_tn_pred').clip(0.0, None))
+                .otherwise(pl.col('quantity_tn_pred')).alias('quantity_tn_pred')
+            ]).group_by(['product_id', 'iperiodo']).agg([
+                # Step 1: Group by product_id and iperiodo, sum quantities
+                pl.col('quantity_tn_true').sum().clip(0.0, None).alias('grouped_quantity_tn_true'),
+                pl.col('quantity_tn_pred').sum().clip(0.0, None).alias('grouped_quantity_tn_pred')
             ]).with_columns([
-                # Calculate absolute differences
-                (pl.col('quantity_tn_true') - pl.col('quantity_tn_pred')).abs().alias('abs_diff')
+                # Step 2: Calculate absolute differences for each group
+                (pl.col('grouped_quantity_tn_true') - pl.col('grouped_quantity_tn_pred')).abs().alias('abs_diff')
+            ]).group_by('iperiodo').agg([
+                # Step 3: Group by iperiodo, sum the grouped quantities and abs_diff
+                pl.col('grouped_quantity_tn_true').sum().alias('periodo_grouped_quantity_tn_true'),
+                pl.col('abs_diff').sum().alias('periodo_abs_diff_sum')
+            ]).with_columns([
+                # Step 4: Calculate TFE for each periodo
+                (pl.col('periodo_abs_diff_sum') / pl.col('periodo_grouped_quantity_tn_true')).alias('periodo_tfe')
             ]).select([
-                pl.col('abs_diff').sum().alias('numerator'),
-                pl.col('quantity_tn_true').sum().alias('denominator')
-            ]).with_columns([
-                (pl.col('numerator') / (pl.col('denominator'))).alias('tfe')
+                # Step 5: Calculate final TFE as mean of all periodo TFEs
+                pl.col('periodo_tfe').mean().alias('tfe')
             ])['tfe'].item()
             
             return 'total_forecast_error', tfe, False  # return (eval_name: str, eval_result: float, is_higher_better: bool)
@@ -810,6 +838,8 @@ class LightGBMModel:
                     )
                     
                     # Store rows for custom metric
+                    self.current_val_fold_product_ids = self.global_product_ids_train[val_idx]
+                    self.current_val_fold_periods = self.global_iperiodos_train[val_idx]
                     self.current_val_fold_mean = self.global_mean_values_train[val_idx]
                     self.current_val_fold_std = self.global_std_values_train[val_idx]
                     
@@ -1103,28 +1133,51 @@ class LightGBMModel:
             logger.info("Making predictions on test set...")
             predictions = np.mean([model.predict(self.X_test) for model in self.final_models], axis=0)
 
+            if not hasattr(self, 'kaggle_product_ids') or not self.kaggle_product_ids:
+                logger.info("Retrieving kaggle product IDs...")
+                kaggle_product_ids_content = self.gcp_manager.download_file_as_bytes(self.dataset["products_for_kaggle_file"])
+                required_product_ids_df = pl.read_csv(BytesIO(kaggle_product_ids_content), has_header=True)
+                self.kaggle_product_ids = required_product_ids_df.select('product_id').to_numpy().flatten()
+
             # Calculate total forecast error
             tfe = pl.DataFrame({
+                'product_id': self.global_product_ids_test,
+                'iperiodo': self.global_iperiodos_test,
                 'y_true': self.y_test,
                 'y_pred': predictions,
                 'mean': self.global_mean_values_test,
                 'std': self.global_std_values_test
-            }).with_columns([
+            }).filter(
+                pl.when(eval(self.dataset["calculate_tfe_only_on_kaggle_products"]))
+                .then(pl.col("product_id").is_in(self.kaggle_product_ids))
+                .otherwise(pl.lit(True))  # keep all rows when condition is False
+            ).with_columns([
                 # Reverse transform predictions
                 ((pl.col('y_pred') * pl.col('std')) + pl.col('mean')).alias('quantity_tn_pred'),
                 # Reverse transform true values
                 ((pl.col('y_true') * pl.col('std')) + pl.col('mean')).alias('quantity_tn_true')
             ]).with_columns([
                 # Zero out negative predictions
-                pl.col('quantity_tn_pred').clip(0.0, None).alias('quantity_tn_pred')
+                pl.when(eval(self.dataset["clip_negative_predictions_before_aggregation"]))
+                .then(pl.col('quantity_tn_pred').clip(0.0, None))
+                .otherwise(pl.col('quantity_tn_pred')).alias('quantity_tn_pred'),
+            ]).group_by(['product_id', 'iperiodo']).agg([
+                # Step 1: Group by product_id and iperiodo, sum quantities
+                pl.col('quantity_tn_true').sum().clip(0.0, None).alias('grouped_quantity_tn_true'),
+                pl.col('quantity_tn_pred').sum().clip(0.0, None).alias('grouped_quantity_tn_pred')
             ]).with_columns([
-                # Calculate absolute differences
-                (pl.col('quantity_tn_true') - pl.col('quantity_tn_pred')).abs().alias('abs_diff')
+                # Step 2: Calculate absolute differences for each group
+                (pl.col('grouped_quantity_tn_true') - pl.col('grouped_quantity_tn_pred')).abs().alias('abs_diff')
+            ]).group_by('iperiodo').agg([
+                # Step 3: Group by iperiodo, sum the grouped quantities and abs_diff
+                pl.col('grouped_quantity_tn_true').sum().alias('periodo_grouped_quantity_tn_true'),
+                pl.col('abs_diff').sum().alias('periodo_abs_diff_sum')
+            ]).with_columns([
+                # Step 4: Calculate TFE for each periodo
+                (pl.col('periodo_abs_diff_sum') / pl.col('periodo_grouped_quantity_tn_true')).alias('periodo_tfe')
             ]).select([
-                pl.col('abs_diff').sum().alias('numerator'),
-                pl.col('quantity_tn_true').sum().alias('denominator')
-            ]).with_columns([
-                (pl.col('numerator') / (pl.col('denominator'))).alias('tfe')
+                # Step 5: Calculate final TFE as mean of all periodo TFEs
+                pl.col('periodo_tfe').mean().alias('tfe')
             ])['tfe'].item()
 
             logger.info(f"Total Forecast Error on test set: {tfe:.4f}")
@@ -1146,13 +1199,14 @@ class LightGBMModel:
         """
 
         with mlflow.start_run(run_name="kaggle_predictions", nested=True):
-            logger.info("Retrieving product IDs for Kaggle submission...")
-            kaggle_product_ids_content = self.gcp_manager.download_file_as_bytes(self.dataset["products_for_kaggle_file"])
-            required_product_ids_df = pl.read_csv(BytesIO(kaggle_product_ids_content), has_header=True)
-            kaggle_product_ids = required_product_ids_df.select('product_id').to_numpy().flatten()
+            if not hasattr(self, 'kaggle_product_ids') or not self.kaggle_product_ids:
+                logger.info("Retrieving kaggle product IDs...")
+                kaggle_product_ids_content = self.gcp_manager.download_file_as_bytes(self.dataset["products_for_kaggle_file"])
+                required_product_ids_df = pl.read_csv(BytesIO(kaggle_product_ids_content), has_header=True)
+                self.kaggle_product_ids = required_product_ids_df.select('product_id').to_numpy().flatten()
 
             kaggle_to_predict = self.kaggle_dataset.filter(
-                pl.col('product_id').is_in(kaggle_product_ids)
+                pl.col('product_id').is_in(self.kaggle_product_ids)
             )
 
             # Get the model compliant rows
@@ -1185,8 +1239,10 @@ class LightGBMModel:
             proportion_non_compliant_quantity_tn_rolling_mean_11m = (
                 non_compliant_quantity_tn_rolling_mean_11m_sum / total_quantity_tn_rolling_mean_11m_sum if total_quantity_tn_rolling_mean_11m_sum > 0 else 0.0
             )
+
             mlflow.log_metric("kaggle_compliant_quantity_tn_rolling_mean_11m_proportion", proportion_compliant_quantity_tn_rolling_mean_11m)
             logger.info(f"Proportion of compliant quantity_tn_rolling_mean_11m: {proportion_compliant_quantity_tn_rolling_mean_11m:.4f} ({compliant_quantity_tn_rolling_mean_11m_sum}/{total_quantity_tn_rolling_mean_11m_sum})")
+            
             mlflow.log_metric("kaggle_non_compliant_quantity_tn_rolling_mean_11m_proportion", proportion_non_compliant_quantity_tn_rolling_mean_11m)
             logger.info(f"Proportion of non-compliant quantity_tn_rolling_mean_11m: {proportion_non_compliant_quantity_tn_rolling_mean_11m:.4f} ({non_compliant_quantity_tn_rolling_mean_11m_sum}/{total_quantity_tn_rolling_mean_11m_sum})")
 
@@ -1209,7 +1265,9 @@ class LightGBMModel:
                     ((pl.col('y_pred') * pl.col('std')) + pl.col('mean')).alias('quantity_tn_pred')
                 ]).with_columns([
                     # Zero out negative predictions
-                    pl.col('quantity_tn_pred').clip(0.0, None).alias('tn')
+                    pl.when(eval(self.dataset["clip_negative_predictions_before_aggregation"]))
+                    .then(pl.col('quantity_tn_pred').clip(0.0, None))
+                    .otherwise(pl.col('quantity_tn_pred')).alias('tn')
                 ]).select(['product_id', 'tn'])
             )
 
@@ -1228,13 +1286,13 @@ class LightGBMModel:
                 transformed_predictions
                 .vstack(kaggle_non_model_compliant)  # Union the two datasets
                 .group_by('product_id')
-                .agg(pl.col('tn').sum().alias('tn'))  # Sum tn by product_id
+                .agg(pl.col('tn').sum().clip(0.0, None).alias('tn'))  # Sum tn by product_id
             )
             
             self._load_12m_agg_dataset()
 
             # For the product_ids not in the kaggle dataset, use the 12 month average from the aggregated dataset
-            missing_product_ids = set(kaggle_product_ids) - set(final_predictions['product_id'].to_numpy())
+            missing_product_ids = set(self.kaggle_product_ids) - set(final_predictions['product_id'].to_numpy())
             if missing_product_ids:
                 logger.info(f"Found {len(missing_product_ids)} missing product IDs in final predictions, using 12 month average for them...")
                 missing_df = (
