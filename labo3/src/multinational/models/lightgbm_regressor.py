@@ -172,7 +172,7 @@ class LightGBMModel:
                 .cast(pl.Int32)  # Convert boolean to int for cum_sum
                 .cum_sum()
                 .over(['customer_id', 'product_id'])
-                .ge(int(self.dataset["positive_quantity_tn_cherry_months"]))  # Convert to boolean flag (True if >= self.dataset["positive_quantity_tn_cherry_months"], False otherwise)
+                .ge(self.dataset["positive_quantity_tn_cherry_months"])  # Convert to boolean flag (True if >= self.dataset["positive_quantity_tn_cherry_months"], False otherwise)
                 .cast(pl.Int32)  # Convert boolean to int (1/0)
                 .alias('cherry_flag')
             )
@@ -228,8 +228,8 @@ class LightGBMModel:
         logger.info("✅ Categorical features encoded successfully.")
 
     def _add_extra_features(self):
-        if eval(str(self.dataset["add_12m_sarima_features"])):
-            if int(self.dataset["max_z_lag_periods"]) < 11:
+        if self.dataset["add_12m_sarima_features"]:
+            if self.dataset["max_z_lag_periods"] < 11:
                 logger.warning("❗ Cannot add 12 month SARIMA features because max_z_lag_periods is less than 11. Skipping...")
             else:
                 logger.info("➕ Adding 12m SARIMA predictions to the dataset (for cherry & non z problematic rows)..")
@@ -430,7 +430,7 @@ class LightGBMModel:
 
                 logger.info(f"Downloading features prepared dataset from MLflow run {run_id}...")
 
-                local_path = client.download_artifacts(run_id, f"features_prepared_{self.dataset["dataset_name"]}")
+                local_path = client.download_artifacts(run_id, f"features_prepared_{self.dataset['dataset_name']}")
                 
                 self.df = pl.read_parquet(local_path)
                 logger.info("✅ Features prepared dataset successfully loaded from storage.")
@@ -458,11 +458,11 @@ class LightGBMModel:
 
             self.df.write_parquet(temp_path)
             
-            logger.info(f"Logging features prepared dataset to MLflow at features_prepared_{self.dataset["dataset_name"]}...")
+            logger.info(f"Logging features prepared dataset to MLflow at features_prepared_{self.dataset['dataset_name']}...")
 
             mlflow.log_artifact(
                 temp_path,
-                artifact_path=f"features_prepared_{self.dataset["dataset_name"]}"
+                artifact_path=f"features_prepared_{self.dataset['dataset_name']}"
             )
 
             os.remove(temp_path)
@@ -669,7 +669,7 @@ class LightGBMModel:
                 logger.info(f"Using existing seeds from MLflow: {seeds}")
             else:
                 logger.info("🔄 No existing seeds found in MLflow, generating new seeds...")
-                num_seeds = int(self.final_train["num_seeds"])
+                num_seeds = self.final_train["num_seeds"]
                 np.random.seed(42)
                 seeds = np.random.randint(1, 10000, size=num_seeds).tolist()
                 mlflow.log_param("final_model_seeds", str(seeds))
@@ -684,7 +684,7 @@ class LightGBMModel:
 
     def _ensure_final_models_in_class(self):
         logger.info("🔄 Ensuring final models are loaded into the class...")
-        if not hasattr(self, 'final_models') or not self.final_models or len(self.final_models) < int(self.final_train["num_seeds"]):
+        if not hasattr(self, 'final_models') or not self.final_models or len(self.final_models) < self.final_train["num_seeds"]:
             logger.info("🔄 Loading final models from MLflow...")
 
             self.final_models = []
@@ -741,7 +741,7 @@ class LightGBMModel:
                 'mean': self.current_val_fold_mean,
                 'std': self.current_val_fold_std
             }).filter(
-                pl.when(eval(self.dataset["calculate_tfe_only_on_kaggle_products"]))
+                pl.when(self.dataset["calculate_tfe_only_on_kaggle_products"])
                 .then(pl.col("product_id").is_in(self.kaggle_product_ids))
                 .otherwise(pl.lit(True))  # keep all rows when condition is False
             ).with_columns([
@@ -751,7 +751,7 @@ class LightGBMModel:
                 ((pl.col('y_true') * pl.col('std')) + pl.col('mean')).alias('quantity_tn_true')
             ]).with_columns([
                 # Zero out negative predictions
-                pl.when(eval(self.dataset["clip_negative_predictions_before_aggregation"]))
+                pl.when(self.dataset["clip_negative_predictions_before_aggregation"])
                 .then(pl.col('quantity_tn_pred').clip(0.0, None))
                 .otherwise(pl.col('quantity_tn_pred')).alias('quantity_tn_pred')
             ]).group_by(['product_id', 'iperiodo']).agg([
@@ -1148,7 +1148,7 @@ class LightGBMModel:
                 'mean': self.global_mean_values_test,
                 'std': self.global_std_values_test
             }).filter(
-                pl.when(eval(self.dataset["calculate_tfe_only_on_kaggle_products"]))
+                pl.when(self.dataset["calculate_tfe_only_on_kaggle_products"])
                 .then(pl.col("product_id").is_in(self.kaggle_product_ids))
                 .otherwise(pl.lit(True))  # keep all rows when condition is False
             ).with_columns([
@@ -1158,7 +1158,7 @@ class LightGBMModel:
                 ((pl.col('y_true') * pl.col('std')) + pl.col('mean')).alias('quantity_tn_true')
             ]).with_columns([
                 # Zero out negative predictions
-                pl.when(eval(self.dataset["clip_negative_predictions_before_aggregation"]))
+                pl.when(self.dataset["clip_negative_predictions_before_aggregation"])
                 .then(pl.col('quantity_tn_pred').clip(0.0, None))
                 .otherwise(pl.col('quantity_tn_pred')).alias('quantity_tn_pred'),
             ]).group_by(['product_id', 'iperiodo']).agg([
@@ -1265,7 +1265,7 @@ class LightGBMModel:
                     ((pl.col('y_pred') * pl.col('std')) + pl.col('mean')).alias('quantity_tn_pred')
                 ]).with_columns([
                     # Zero out negative predictions
-                    pl.when(eval(self.dataset["clip_negative_predictions_before_aggregation"]))
+                    pl.when(self.dataset["clip_negative_predictions_before_aggregation"])
                     .then(pl.col('quantity_tn_pred').clip(0.0, None))
                     .otherwise(pl.col('quantity_tn_pred')).alias('tn')
                 ]).select(['product_id', 'tn'])

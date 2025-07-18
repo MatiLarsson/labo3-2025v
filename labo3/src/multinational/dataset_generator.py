@@ -526,11 +526,11 @@ class DatasetGenerator:
             thread_config_msg = f"auto-detectado por DuckDB (~{total_cpus} threads)"
         
         # 5. Logging de la configuración detectada
-        print(f"🔧 Auto-configurando DuckDB:")
-        print(f"   💾 RAM total: {total_ram_gb:.1f} GB -> usando {available_ram_gb} GB")
-        print(f"   💿 Disco libre: {free_disk_gb:.1f} GB -> usando {available_disk_gb} GB")
-        print(f"   🔄 CPUs: {total_cpus} -> {thread_config_msg}")
-        print(f"   📁 Directorio temporal: {temp_dir}")
+        logger.info(f"🔧 Auto-configurando DuckDB:")
+        logger.info(f"   💾 RAM total: {total_ram_gb:.1f} GB -> usando {available_ram_gb} GB")
+        logger.info(f"   💿 Disco libre: {free_disk_gb:.1f} GB -> usando {available_disk_gb} GB")
+        logger.info(f"   🔄 CPUs: {total_cpus} -> {thread_config_msg}")
+        logger.info(f"   📁 Directorio temporal: {temp_dir}")
         
         # 6. Aplicar configuración
         conn.execute(f"PRAGMA memory_limit='{available_ram_gb}GiB'")
@@ -545,7 +545,7 @@ class DatasetGenerator:
         conn.execute("PRAGMA enable_progress_bar=true")
         conn.execute("PRAGMA preserve_insertion_order=false")
         
-        print("✅ DuckDB configurado automáticamente")
+        logger.info("✅ DuckDB configurado automáticamente")
         
         return {
             'memory_limit_gb': available_ram_gb,
@@ -586,13 +586,13 @@ class DatasetGenerator:
                 except Exception as e:
                     logger.warning(f"Could not log parameter {key}: {e}")
 
-            if eval(self.config.dataset["train_only_on_kaggle_top_products"]):
+            if self.config.dataset["train_only_on_kaggle_top_products"]:
                 top_kaggle_products_filter = "AND dp.product_id IN (SELECT product_id FROM top_product_ids_to_use)"
             else:
                 top_kaggle_products_filter = ""
 
-            if int(eval(self.config.dataset["top_kaggle_products_to_train_on"])) > 0 and eval(self.config.dataset["train_only_on_kaggle_top_products"]):
-                top_products_to_consider = int(eval(self.config.dataset["top_kaggle_products_to_train_on"]))
+            if self.config.dataset["top_kaggle_products_to_train_on"] > 0 and self.config.dataset["train_only_on_kaggle_top_products"]:
+                top_products_to_consider = self.config.dataset["top_kaggle_products_to_train_on"]
                 
                 top_product_ids_to_use_sentence = f"""
                 top_product_ids_to_use AS (
