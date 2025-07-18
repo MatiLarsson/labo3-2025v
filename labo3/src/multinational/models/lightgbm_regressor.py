@@ -572,8 +572,8 @@ class LightGBMModel:
         # Gather global series needed for training
         self.global_product_ids_train = train_dataset.select(pl.col('product_id')).to_numpy().flatten()
         self.global_product_ids_test = test_dataset.select(pl.col('product_id')).to_numpy().flatten()
-        self.global_periods_train = train_dataset.select(pl.col('period')).to_numpy().flatten()
-        self.global_periods_test = test_dataset.select(pl.col('period')).to_numpy().flatten()
+        self.global_periods_train = train_dataset.select(pl.col('periodo')).to_numpy().flatten()
+        self.global_periods_test = test_dataset.select(pl.col('periodo')).to_numpy().flatten()
         self.global_mean_values_train = train_dataset.select(pl.col('quantity_tn_cumulative_mean')).to_numpy().flatten()
         self.global_mean_values_test = test_dataset.select(pl.col('quantity_tn_cumulative_mean')).to_numpy().flatten()
         self.global_std_values_train = train_dataset.select(pl.col('quantity_tn_cumulative_std')).to_numpy().flatten()
@@ -735,7 +735,7 @@ class LightGBMModel:
 
             tfe = pl.DataFrame({
                 'product_id': self.current_val_fold_product_ids,
-                'period': self.current_val_fold_periods,
+                'periodo': self.current_val_fold_periods,
                 'y_true': y_true_array,
                 'y_pred': y_pred,
                 'mean': self.current_val_fold_mean,
@@ -754,14 +754,14 @@ class LightGBMModel:
                 pl.when(self.dataset["clip_negative_predictions_before_aggregation"])
                 .then(pl.col('quantity_tn_pred').clip(0.0, None))
                 .otherwise(pl.col('quantity_tn_pred')).alias('quantity_tn_pred')
-            ]).group_by(['product_id', 'period']).agg([
+            ]).group_by(['product_id', 'periodo']).agg([
                 # Step 1: Group by product_id and period, sum quantities
                 pl.col('quantity_tn_true').sum().clip(0.0, None).alias('grouped_quantity_tn_true'),
                 pl.col('quantity_tn_pred').sum().clip(0.0, None).alias('grouped_quantity_tn_pred')
             ]).with_columns([
                 # Step 2: Calculate absolute differences for each group
                 (pl.col('grouped_quantity_tn_true') - pl.col('grouped_quantity_tn_pred')).abs().alias('abs_diff')
-            ]).group_by('period').agg([
+            ]).group_by('periodo').agg([
                 # Step 3: Group by period, sum the grouped quantities and abs_diff
                 pl.col('grouped_quantity_tn_true').sum().alias('periodo_grouped_quantity_tn_true'),
                 pl.col('abs_diff').sum().alias('periodo_abs_diff_sum')
@@ -1142,7 +1142,7 @@ class LightGBMModel:
             # Calculate total forecast error
             tfe = pl.DataFrame({
                 'product_id': self.global_product_ids_test,
-                'period': self.global_periods_test,
+                'periodo': self.global_periods_test,
                 'y_true': self.y_test,
                 'y_pred': predictions,
                 'mean': self.global_mean_values_test,
@@ -1161,14 +1161,14 @@ class LightGBMModel:
                 pl.when(self.dataset["clip_negative_predictions_before_aggregation"])
                 .then(pl.col('quantity_tn_pred').clip(0.0, None))
                 .otherwise(pl.col('quantity_tn_pred')).alias('quantity_tn_pred'),
-            ]).group_by(['product_id', 'period']).agg([
+            ]).group_by(['product_id', 'periodo']).agg([
                 # Step 1: Group by product_id and period, sum quantities
                 pl.col('quantity_tn_true').sum().clip(0.0, None).alias('grouped_quantity_tn_true'),
                 pl.col('quantity_tn_pred').sum().clip(0.0, None).alias('grouped_quantity_tn_pred')
             ]).with_columns([
                 # Step 2: Calculate absolute differences for each group
                 (pl.col('grouped_quantity_tn_true') - pl.col('grouped_quantity_tn_pred')).abs().alias('abs_diff')
-            ]).group_by('period').agg([
+            ]).group_by('periodo').agg([
                 # Step 3: Group by period, sum the grouped quantities and abs_diff
                 pl.col('grouped_quantity_tn_true').sum().alias('periodo_grouped_quantity_tn_true'),
                 pl.col('abs_diff').sum().alias('periodo_abs_diff_sum')
