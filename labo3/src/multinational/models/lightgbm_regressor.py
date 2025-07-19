@@ -719,7 +719,7 @@ class LightGBMModel:
         Optimize the model's params with GCS-backed Optuna storage for recovery.
         """
 
-        if not hasattr(self, 'kaggle_product_ids') or not self.kaggle_product_ids:
+        if not hasattr(self, 'kaggle_product_ids')  or len(self.kaggle_product_ids) == 0:
             logger.info("Retrieving kaggle product IDs...")
             kaggle_product_ids_content = self.gcp_manager.download_file_as_bytes(self.dataset["products_for_kaggle_file"])
             required_product_ids_df = pl.read_csv(BytesIO(kaggle_product_ids_content), has_header=True)
@@ -1133,7 +1133,7 @@ class LightGBMModel:
             logger.info("Making predictions on test set...")
             predictions = np.mean([model.predict(self.X_test) for model in self.final_models], axis=0)
 
-            if not hasattr(self, 'kaggle_product_ids') or not self.kaggle_product_ids:
+            if not hasattr(self, 'kaggle_product_ids') or len(self.kaggle_product_ids) == 0:
                 logger.info("Retrieving kaggle product IDs...")
                 kaggle_product_ids_content = self.gcp_manager.download_file_as_bytes(self.dataset["products_for_kaggle_file"])
                 required_product_ids_df = pl.read_csv(BytesIO(kaggle_product_ids_content), has_header=True)
@@ -1199,7 +1199,7 @@ class LightGBMModel:
         """
 
         with mlflow.start_run(run_name="kaggle_predictions", nested=True):
-            if not hasattr(self, 'kaggle_product_ids') or not self.kaggle_product_ids:
+            if not hasattr(self, 'kaggle_product_ids') or len(self.kaggle_product_ids) == 0:
                 logger.info("Retrieving kaggle product IDs...")
                 kaggle_product_ids_content = self.gcp_manager.download_file_as_bytes(self.dataset["products_for_kaggle_file"])
                 required_product_ids_df = pl.read_csv(BytesIO(kaggle_product_ids_content), has_header=True)
