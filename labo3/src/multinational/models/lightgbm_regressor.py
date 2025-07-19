@@ -1191,11 +1191,9 @@ class LightGBMModel:
     def predict_for_kaggle(self):
         """
         Make predictions for Kaggle submission.
-        For the top products (present in the kaggle dataset):
-            Use the final trained models to predict on the Kaggle dataset for the cherry compliant rows.
-            Use the 12 month average for the non cherry compliant rows or the rows with problematic standardization.
-        For the rest of the products:
-            Use the 12 month average aggregated by product_id.
+        Use the final trained models to predict on the Kaggle dataset for the rows that are cherry compliant and have valid standardization.
+        Use the 12 month average for the non cherry compliant rows or the rows with problematic standardization.
+        If some kaggle products were stripped from the dataset, they will not be predicted, so we add them at the last with a prediction equivalent to the aggregated 12 month average for the product_id.            Use the 12 month average aggregated by product_id.
         """
 
         with mlflow.start_run(run_name="kaggle_predictions", nested=True):
@@ -1203,7 +1201,7 @@ class LightGBMModel:
                 logger.info("Retrieving kaggle product IDs...")
                 kaggle_product_ids_content = self.gcp_manager.download_file_as_bytes(self.dataset["products_for_kaggle_file"])
                 self.required_product_ids_df = pl.read_csv(BytesIO(kaggle_product_ids_content), has_header=True)
-                self.kaggle_product_ids = self.required_product_ids_df.select('product_id').to_numpy().flatten()
+                self.kaggle_product_ids = set(self.required_product_ids_df.select('product_id').to_numpy().flatten())
 
             kaggle_to_predict = self.kaggle_dataset.filter(
                 pl.col('product_id').is_in(self.kaggle_product_ids)
@@ -1300,8 +1298,8 @@ class LightGBMModel:
             self._load_12m_agg_dataset()
 
             # For the product_ids not in the kaggle dataset, use the 12 month average from the aggregated dataset
-            missing_product_ids = set(self.kaggle_product_ids) - set(final_predictions['product_id'].to_numpy())
-            if missing_product_ids:
+            missing_product_ids = self.kaggle_product_ids - set(final_predictions['product_id'].to_numpy().flatten())
+            if missing_product_ids and len(missing_product_ids) > 0:
                 logger.info(f"Found {len(missing_product_ids)} missing product IDs in final predictions, using 12 month average for them...")
                 missing_df = (
                     pl.DataFrame({'product_id': list(missing_product_ids)})
@@ -1335,7 +1333,7 @@ class LightGBMModel:
             # Batch generate all multiplier files
             logger.info("🚀 Batch generating 18 submission variants...")
 
-            multipliers = [round(x * 0.01, 2) for x in range(70, 100)] + [round(x * 0.01, 2) for x in range(101, 131)]
+            multipliers = [round(x * 0.01, 2) for x in range(50, 100)] + [round(x * 0.01, 2) for x in range(101, 151)]
 
             # Create all multiplied columns at once using Polars vectorization
             multiplied_df = final_submission_df.with_columns([
