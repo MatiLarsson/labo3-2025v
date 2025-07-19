@@ -1209,10 +1209,14 @@ class LightGBMModel:
                 pl.col('product_id').is_in(self.kaggle_product_ids)
             )
 
-            # Get the model compliant rows
-            kaggle_model_compliant = kaggle_to_predict.filter(
-                (pl.col('cherry_flag') == 1) & (pl.col('invalid_standardization_flag') == 0)
-            )
+            if self.dataset['distinguish_kaggle_compliant_rows']:
+                # Get the model compliant rows
+                kaggle_model_compliant = kaggle_to_predict.filter(
+                    (pl.col('cherry_flag') == 1) & (pl.col('invalid_standardization_flag') == 0)
+                )
+            else:
+                # If not distinguishing, all rows are compliant
+                kaggle_model_compliant = kaggle_to_predict
 
             # Log to mlflow the proportion of compliant rows out of total rows
             compliant_count = len(kaggle_model_compliant)
@@ -1271,15 +1275,22 @@ class LightGBMModel:
                 ]).select(['product_id', 'tn'])
             )
 
-            kaggle_non_model_compliant = kaggle_to_predict.filter(
-                (pl.col('cherry_flag') == 0) | (pl.col('invalid_standardization_flag') == 1)
-            ).select(
-                pl.col('product_id'),
-                pl.col('quantity_tn_rolling_mean_11m')
-                .fill_null(0)  # Replace null values with 0
-                .fill_nan(0)   # Replace NaN values with 0
-                .alias('tn'),
-            )
+            if self.dataset['distinguish_kaggle_compliant_rows']:
+                kaggle_non_model_compliant = kaggle_to_predict.filter(
+                    (pl.col('cherry_flag') == 0) | (pl.col('invalid_standardization_flag') == 1)
+                ).select(
+                    pl.col('product_id'),
+                    pl.col('quantity_tn_rolling_mean_11m')
+                    .fill_null(0)  # Replace null values with 0
+                    .fill_nan(0)   # Replace NaN values with 0
+                    .alias('tn'),
+                )
+            else:
+                # Initialize an empty Dataframe for non-compliant rows
+                kaggle_non_model_compliant = pl.DataFrame({
+                    'product_id': [],
+                    'tn': []
+                })
 
             # Union the datasets and sum tn by product_id
             final_predictions = (
@@ -1327,7 +1338,7 @@ class LightGBMModel:
             # Batch generate all multiplier files
             logger.info("🚀 Batch generating 18 submission variants...")
 
-            multipliers = [round(x * 0.01, 2) for x in range(90, 100)] + [round(x * 0.01, 2) for x in range(101, 111)]
+            multipliers = [round(x * 0.01, 2) for x in range(70, 100)] + [round(x * 0.01, 2) for x in range(101, 131)]
 
             # Create all multiplied columns at once using Polars vectorization
             multiplied_df = final_submission_df.with_columns([
