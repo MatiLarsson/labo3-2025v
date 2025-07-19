@@ -722,8 +722,8 @@ class LightGBMModel:
         if not hasattr(self, 'kaggle_product_ids')  or len(self.kaggle_product_ids) == 0:
             logger.info("Retrieving kaggle product IDs...")
             kaggle_product_ids_content = self.gcp_manager.download_file_as_bytes(self.dataset["products_for_kaggle_file"])
-            required_product_ids_df = pl.read_csv(BytesIO(kaggle_product_ids_content), has_header=True)
-            self.kaggle_product_ids = required_product_ids_df.select('product_id').to_numpy().flatten()
+            self.required_product_ids_df = pl.read_csv(BytesIO(kaggle_product_ids_content), has_header=True)
+            self.kaggle_product_ids = self.required_product_ids_df.select('product_id').to_numpy().flatten()
 
         # Custom metric function for LightGBM
         def total_forecast_error_cv(y_pred, y_true): # Needs (preds: numpy 1-D array, eval_data: Dataset)
@@ -1133,11 +1133,11 @@ class LightGBMModel:
             logger.info("Making predictions on test set...")
             predictions = np.mean([model.predict(self.X_test) for model in self.final_models], axis=0)
 
-            if not hasattr(self, 'kaggle_product_ids') or len(self.kaggle_product_ids) == 0:
+            if not hasattr(self, 'kaggle_product_ids') or (hasattr(self, 'kaggle_product_ids') and len(self.kaggle_product_ids) == 0):
                 logger.info("Retrieving kaggle product IDs...")
                 kaggle_product_ids_content = self.gcp_manager.download_file_as_bytes(self.dataset["products_for_kaggle_file"])
-                required_product_ids_df = pl.read_csv(BytesIO(kaggle_product_ids_content), has_header=True)
-                self.kaggle_product_ids = required_product_ids_df.select('product_id').to_numpy().flatten()
+                self.required_product_ids_df = pl.read_csv(BytesIO(kaggle_product_ids_content), has_header=True)
+                self.kaggle_product_ids = self.required_product_ids_df.select('product_id').to_numpy().flatten()
 
             # Calculate total forecast error
             tfe = pl.DataFrame({
@@ -1199,11 +1199,11 @@ class LightGBMModel:
         """
 
         with mlflow.start_run(run_name="kaggle_predictions", nested=True):
-            if not hasattr(self, 'kaggle_product_ids') or len(self.kaggle_product_ids) == 0:
+            if not hasattr(self, 'kaggle_product_ids') or (hasattr(self, 'kaggle_product_ids') and len(self.kaggle_product_ids) == 0):
                 logger.info("Retrieving kaggle product IDs...")
                 kaggle_product_ids_content = self.gcp_manager.download_file_as_bytes(self.dataset["products_for_kaggle_file"])
-                required_product_ids_df = pl.read_csv(BytesIO(kaggle_product_ids_content), has_header=True)
-                self.kaggle_product_ids = required_product_ids_df.select('product_id').to_numpy().flatten()
+                self.required_product_ids_df = pl.read_csv(BytesIO(kaggle_product_ids_content), has_header=True)
+                self.kaggle_product_ids = self.required_product_ids_df.select('product_id').to_numpy().flatten()
 
             kaggle_to_predict = self.kaggle_dataset.filter(
                 pl.col('product_id').is_in(self.kaggle_product_ids)
@@ -1307,7 +1307,7 @@ class LightGBMModel:
                 final_predictions = final_predictions.vstack(missing_df)
 
             final_submission_df = (
-                required_product_ids_df
+                self.required_product_ids_df
                 .join(final_predictions, on='product_id', how='left')
                 .with_columns(pl.col('tn').fill_null(0.0))
                 .select(['product_id', 'tn'])
