@@ -29,7 +29,7 @@ paths:
     - "data/tb_stocks.txt"
 
 dataset:
-  clip_negative_predictions_before_aggregation: false # True to clip negative predictions before aggregatioin in bo optimization, test, and final predictions for kaggle
+  clip_negative_predictions_before_aggregation: true # True to clip negative predictions before aggregatioin in bo optimization, test, and final predictions for kaggle
   calculate_tfe_only_on_kaggle_products: true # True to calculate TFE only on products that are in the Kaggle submission file, during bo optimization and final test
   train_only_on_kaggle_top_products: false # True to limit the train and test datasets to the top products required by the Kaggle submission list
   top_kaggle_products_to_train_on: 100 # Top products to consider (the top products from the submission requred product_ids with the most sales in 2019)
@@ -64,7 +64,7 @@ dataset:
   products_12m_agg_dataset_name: "products_12m_agg.parquet"
   clipping_threshold: 1e7  # Extreme value clipping threshold
   add_12m_sarima_features: true  # Add SARIMA features trained on 12 months of data with a 12-month seasonal cycle
-  distinguish_kaggle_compliant_rows: false # True to distinguish rows that are compliant with the Kaggle submission requirements (cherry_flag == 1 and invalid_standardization_flag == 0)
+  zero_out_all_non_compliant_product_customer: true # True to distinguish rows that are compliant with the Kaggle submission requirements (cherry_flag == 1 and invalid_standardization_flag == 0)
 
 strategy:
   test_month: 201910 # int

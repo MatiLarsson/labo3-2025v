@@ -1209,14 +1209,10 @@ class LightGBMModel:
                 pl.col('product_id').is_in(self.kaggle_product_ids)
             )
 
-            if self.dataset['distinguish_kaggle_compliant_rows']:
-                # Get the model compliant rows
-                kaggle_model_compliant = kaggle_to_predict.filter(
-                    (pl.col('cherry_flag') == 1) & (pl.col('invalid_standardization_flag') == 0)
-                )
-            else:
-                # If not distinguishing, all rows are compliant
-                kaggle_model_compliant = kaggle_to_predict
+            # Get the model compliant rows
+            kaggle_model_compliant = kaggle_to_predict.filter(
+                (pl.col('cherry_flag') == 1) & (pl.col('invalid_standardization_flag') == 0)
+            )
 
             # Log to mlflow the proportion of compliant rows out of total rows
             compliant_count = len(kaggle_model_compliant)
@@ -1275,22 +1271,23 @@ class LightGBMModel:
                 ]).select(['product_id', 'tn'])
             )
 
-            if self.dataset['distinguish_kaggle_compliant_rows']:
-                kaggle_non_model_compliant = kaggle_to_predict.filter(
+            kaggle_non_model_compliant = (
+                kaggle_to_predict
+                .filter(
                     (pl.col('cherry_flag') == 0) | (pl.col('invalid_standardization_flag') == 1)
-                ).select(
-                    pl.col('product_id'),
-                    pl.col('quantity_tn_rolling_mean_11m')
-                    .fill_null(0)  # Replace null values with 0
-                    .fill_nan(0)   # Replace NaN values with 0
-                    .alias('tn'),
                 )
-            else:
-                # Initialize an empty Dataframe for non-compliant rows
-                kaggle_non_model_compliant = pl.DataFrame({
-                    'product_id': [],
-                    'tn': []
-                })
+                .with_columns([
+                    pl.when(self.dataset["zero_out_all_non_compliant_product_customer"])
+                    .then(pl.lit(0.0))  # More explicit than clip(0.0, 0.0)
+                    .otherwise(
+                        pl.col('quantity_tn_rolling_mean_11m')
+                        .fill_null(0.0)   # Handle nulls first
+                        .fill_nan(0.0)    # Handle NaNs first
+                    )
+                    .alias('tn')
+                ])
+                .select(['product_id', 'tn'])
+            )
 
             # Union the datasets and sum tn by product_id
             final_predictions = (
