@@ -1298,7 +1298,7 @@ class LightGBMModel:
             self._load_12m_agg_dataset()
 
             # For the product_ids not in the kaggle dataset, use the 12 month average from the aggregated dataset
-            missing_product_ids = self.kaggle_product_ids - set(final_predictions['product_id'].to_numpy().flatten())
+            missing_product_ids = set(self.kaggle_product_ids) - set(final_predictions['product_id'].to_numpy().flatten())
             if missing_product_ids and len(missing_product_ids) > 0:
                 logger.info(f"Found {len(missing_product_ids)} missing product IDs in final predictions, using 12 month average for them...")
                 missing_df = (
